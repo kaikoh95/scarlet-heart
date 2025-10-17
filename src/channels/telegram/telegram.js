@@ -48,7 +48,10 @@ class TelegramChannel extends NotificationChannel {
     _getNetworkOptions() {
         const options = {};
         if (this.config.forceIPv4) {
-            options.family = 4;
+            const http = require('http');
+            const https = require('https');
+            options.httpAgent = new http.Agent({ family: 4 });
+            options.httpsAgent = new https.Agent({ family: 4 });
         }
         return options;
     }
@@ -113,7 +116,15 @@ class TelegramChannel extends NotificationChannel {
         // Get current tmux session and conversation content
         const tmuxSession = this._getCurrentTmuxSession();
         if (tmuxSession && !notification.metadata) {
-            const conversation = this.tmuxMonitor.getRecentConversation(tmuxSession);
+            // Increase line limit to capture long responses (1000 words ~ 2000-3000 lines)
+            const conversation = this.tmuxMonitor.getRecentConversation(tmuxSession, 3000);
+
+            // Debug logging
+            this.logger.debug(`Extracted conversation:`);
+            this.logger.debug(`  User Question: ${conversation.userQuestion?.substring(0, 100)}...`);
+            this.logger.debug(`  Claude Response length: ${conversation.claudeResponse?.length || 0} chars`);
+            this.logger.debug(`  Claude Response preview: ${conversation.claudeResponse?.substring(0, 200)}...`);
+
             notification.metadata = {
                 userQuestion: conversation.userQuestion || notification.message,
                 claudeResponse: conversation.claudeResponse || notification.message,
@@ -125,34 +136,15 @@ class TelegramChannel extends NotificationChannel {
         await this._createSession(sessionId, notification, token);
 
         // Generate Telegram message
-        const messageText = this._generateTelegramMessage(notification, sessionId, token);
-        
+        const messageText = await this._generateTelegramMessage(notification, sessionId, token);
+
         // Determine recipient (chat or group)
         const chatId = this.config.groupId || this.config.chatId;
-        const isGroupChat = !!this.config.groupId;
-        
-        // Create buttons using callback_data instead of inline query
-        // This avoids the automatic @bot_name addition
-        const buttons = [
-            [
-                {
-                    text: '📝 Personal Chat',
-                    callback_data: `personal:${token}`
-                },
-                {
-                    text: '👥 Group Chat', 
-                    callback_data: `group:${token}`
-                }
-            ]
-        ];
-        
+
         const requestData = {
             chat_id: chatId,
             text: messageText,
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: buttons
-            }
+            parse_mode: 'Markdown'
         };
 
         try {
@@ -172,15 +164,15 @@ class TelegramChannel extends NotificationChannel {
         }
     }
 
-    _generateTelegramMessage(notification, sessionId, token) {
+    async _generateTelegramMessage(notification, sessionId, token) {
         const type = notification.type;
         const emoji = type === 'completed' ? '✅' : '⏳';
         const status = type === 'completed' ? 'Completed' : 'Waiting for Input';
-        
+
         let messageText = `${emoji} *Claude Task ${status}*\n`;
         messageText += `*Project:* ${notification.project}\n`;
-        messageText += `*Session Token:* \`${token}\`\n\n`;
-        
+        messageText += `*Session Token:*\n\`\`\`\n${token}\n\`\`\`\n`;
+
         if (notification.metadata) {
             if (notification.metadata.userQuestion) {
                 messageText += `📝 *Your Question:*\n${notification.metadata.userQuestion.substring(0, 200)}`;
@@ -189,19 +181,39 @@ class TelegramChannel extends NotificationChannel {
                 }
                 messageText += '\n\n';
             }
-            
+
             if (notification.metadata.claudeResponse) {
-                messageText += `🤖 *Claude Response:*\n${notification.metadata.claudeResponse.substring(0, 300)}`;
-                if (notification.metadata.claudeResponse.length > 300) {
-                    messageText += '...';
+                // Get last 100 words as preview
+                const fullResponse = notification.metadata.claudeResponse;
+                const words = fullResponse.split(/\s+/);
+
+                let preview;
+                if (words.length > 100) {
+                    // Get last 100 words
+                    preview = words.slice(-100).join(' ');
+                } else {
+                    preview = fullResponse;
                 }
+
+                // Format as blockquote (using Markdown)
+                messageText += `🤖 *Claude Response Preview (last 100 words):*\n`;
+                messageText += `\`\`\`\n${preview}\n\`\`\``;
+
+                if (words.length > 100) {
+                    messageText += `\n_(...showing last 100 of ${words.length} words, full response in tmux session)_`;
+                }
+
                 messageText += '\n\n';
             }
         }
-        
+
         messageText += `💬 *To send a new command:*\n`;
-        messageText += `Reply with: \`/cmd ${token} <your command>\`\n`;
-        messageText += `Example: \`/cmd ${token} Please analyze this code\``;
+        messageText += `\`\`\`\n/cmd ${token}\n\`\`\`\n\n`;
+
+        // Get bot username and add group chat format
+        const botUsername = await this._getBotUsername();
+        messageText += `👥 *For group chats:*\n`;
+        messageText += `\`\`\`\n@${botUsername} /cmd ${token}\n\`\`\``;
 
         return messageText;
     }

@@ -608,7 +608,7 @@ class TmuxMonitor extends EventEmitter {
      */
     extractConversation(text, sessionName = null) {
         const lines = text.split('\n');
-        
+
         let userQuestion = '';
         let claudeResponse = '';
         let responseLines = [];
@@ -617,60 +617,80 @@ class TmuxMonitor extends EventEmitter {
         // Find the most recent user question and Claude response
         let inUserInput = false;
         let userQuestionLines = [];
-        
+        let lastUserInputIndex = -1;
+
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
-            
+
             // Detect user input (line starting with "> " followed by content)
             if (line.startsWith('> ') && line.length > 2) {
                 userQuestionLines = [line.substring(2).trim()];
                 inUserInput = true;
                 inResponse = false; // Reset response capture
                 responseLines = []; // Clear previous response
-                
+                lastUserInputIndex = i; // Track where user input was
+
                 // Record user input timestamp if session name provided
                 if (sessionName) {
                     this.traceCapture.recordUserInput(sessionName);
                 }
-                
+
                 continue;
             }
-            
+
             // Continue capturing multi-line user input
-            if (inUserInput && !line.startsWith('⏺') && line.length > 0) {
+            if (inUserInput && !line.startsWith('⏺') && line.length > 0 &&
+                !line.includes('? for shortcuts') && !line.match(/^[╭╰│─]+$/)) {
                 userQuestionLines.push(line);
                 continue;
             }
-            
+
             // End of user input
             if (inUserInput && (line.startsWith('⏺') || line.length === 0)) {
                 inUserInput = false;
                 userQuestion = userQuestionLines.join(' ');
             }
-            
+
             // Detect Claude response (line starting with "⏺ " or other response indicators)
-            if (line.startsWith('⏺ ') || 
-                (inResponse && line.length > 0 && 
-                 !line.startsWith('╭') && !line.startsWith('│') && !line.startsWith('╰') &&
-                 !line.startsWith('> ') && !line.includes('? for shortcuts'))) {
-                
-                if (line.startsWith('⏺ ')) {
-                    inResponse = true;
-                    responseLines = [line.substring(2).trim()]; // Remove "⏺ " prefix
-                } else if (inResponse) {
+            if (line.startsWith('⏺ ')) {
+                inResponse = true;
+                responseLines = [line.substring(2).trim()]; // Remove "⏺ " prefix
+                continue;
+            }
+
+            // Continue capturing response content
+            if (inResponse) {
+                // Stop capturing when we hit the command prompt box or next user input
+                if (line.startsWith('╭') && line.includes('─') && line.includes('╮')) {
+                    // This is likely the command prompt box, stop here
+                    inResponse = false;
+                    continue;
+                }
+
+                if (line.startsWith('│ > ') || (line.trim() === '>' && i < lines.length - 3)) {
+                    // This is the next user prompt, stop here
+                    inResponse = false;
+                    continue;
+                }
+
+                if (line.includes('? for shortcuts')) {
+                    // Skip the shortcuts line but don't stop capturing yet
+                    continue;
+                }
+
+                // Capture everything else as response content
+                if (line.length > 0) {
                     responseLines.push(line);
                 }
-            }
-            
-            // Stop capturing response when we hit another prompt or box boundary
-            if (inResponse && (line.startsWith('╭') || line.startsWith('│ > ') || line.includes('? for shortcuts'))) {
-                inResponse = false;
             }
         }
 
         // Join response lines and clean up
         claudeResponse = responseLines.join('\n').trim();
-        
+
+        // Debug logging
+        console.log(`📊 Extraction stats: ${responseLines.length} response lines captured, ${claudeResponse.length} chars total`);
+
         // Remove box characters but preserve formatting
         claudeResponse = claudeResponse
             .replace(/[╭╰│]/g, '')
@@ -678,6 +698,44 @@ class TmuxMonitor extends EventEmitter {
             // Don't collapse multiple spaces - preserve code formatting
             // .replace(/\s+/g, ' ')
             .trim();
+
+        // FALLBACK: If we didn't find a response with ⏺ prefix, try to capture any content after the last user input
+        if (!claudeResponse && lastUserInputIndex >= 0) {
+            console.log('⚠️ No ⏺ prefix found, using fallback extraction...');
+
+            // Collect all lines after the user input that look like responses
+            const fallbackResponseLines = [];
+            let foundContent = false;
+
+            for (let i = lastUserInputIndex + 1; i < lines.length; i++) {
+                const line = lines[i].trim();
+
+                // Skip empty lines, box characters, and prompts
+                if (!line ||
+                    line.match(/^[╭╰│─]+$/) ||
+                    line.includes('? for shortcuts') ||
+                    line.startsWith('│ > ') ||
+                    line === '>' ||
+                    line.match(/^>\s*$/)) {
+                    // If we already found content and hit a prompt, stop
+                    if (foundContent && (line.startsWith('│ > ') || line === '>' || line.match(/^>\s*$/))) {
+                        break;
+                    }
+                    continue;
+                }
+
+                // This looks like actual response content
+                if (line.length > 2) {
+                    foundContent = true;
+                    fallbackResponseLines.push(line);
+                }
+            }
+
+            if (fallbackResponseLines.length > 0) {
+                claudeResponse = fallbackResponseLines.join('\n').trim();
+                console.log(`✅ Fallback extraction found ${fallbackResponseLines.length} lines of response`);
+            }
+        }
 
         // Don't limit response length - we want the full response
         // if (claudeResponse.length > 500) {
@@ -695,7 +753,16 @@ class TmuxMonitor extends EventEmitter {
             }
         }
 
-        return { 
+        // Log extraction results for debugging
+        if (!claudeResponse) {
+            console.log('⚠️ Still no Claude response found after fallback');
+            console.log('Last 5 lines of captured text:');
+            lines.slice(-5).forEach((line, idx) => {
+                console.log(`  ${idx}: "${line}"`);
+            });
+        }
+
+        return {
             userQuestion: userQuestion || 'No user input',
             claudeResponse: claudeResponse || 'No Claude response'
         };
