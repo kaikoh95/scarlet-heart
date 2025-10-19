@@ -1,9 +1,10 @@
 /**
- * Response Formatter Utility
- * Shared utilities for formatting Claude responses across different channels
+ * Text Formatter Utility
+ * Shared utilities for formatting and escaping text across different channels
+ * Consolidates all text formatting logic from Slack, Telegram, and Email channels
  */
 
-class ResponseFormatter {
+class TextFormatter {
     /**
      * Get preview of Claude response (last N words)
      * @param {string} fullResponse - The full Claude response
@@ -104,6 +105,7 @@ class ResponseFormatter {
 
     /**
      * Escape HTML special characters
+     * Used by Telegram and Email channels
      * @param {string} text - Text to escape
      * @returns {string} Escaped text
      */
@@ -116,6 +118,21 @@ class ResponseFormatter {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    /**
+     * Escape Slack markdown special characters
+     * Used by Slack channel
+     * @param {string} text - Text to escape
+     * @returns {string} Escaped text
+     */
+    static escapeMarkdown(text) {
+        if (!text) return '';
+
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
     }
 
     /**
@@ -162,4 +179,4 @@ class ResponseFormatter {
     }
 }
 
-module.exports = ResponseFormatter;
+module.exports = TextFormatter;

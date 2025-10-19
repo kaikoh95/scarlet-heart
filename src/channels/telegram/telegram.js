@@ -9,19 +9,26 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
 const TmuxMonitor = require('../../utils/tmux-monitor');
-const ResponseFormatter = require('../../utils/response-formatter');
+const TextFormatter = require('../../utils/text-formatter');
+const TmuxSessionHelper = require('../../core/tmux-session-helper');
 const { execSync } = require('child_process');
+
+// Dedicated session for Telegram notifications
+const TELEGRAM_SESSION = 'claude-session';
 
 class TelegramChannel extends NotificationChannel {
     constructor(config = {}) {
         super('telegram', config);
         this.sessionsDir = path.join(__dirname, '../../data/sessions');
         this.tmuxMonitor = new TmuxMonitor();
+        this.tmuxHelper = new TmuxSessionHelper(this.logger);
         this.apiBaseUrl = 'https://api.telegram.org';
         this.botUsername = null; // Cache for bot username
-        
+        this.sessionName = TELEGRAM_SESSION; // Always use dedicated session
+
         this._ensureDirectories();
         this._validateConfig();
+        this._ensureTelegramSession();
     }
 
     _ensureDirectories() {
@@ -40,6 +47,29 @@ class TelegramChannel extends NotificationChannel {
             return false;
         }
         return true;
+    }
+
+    /**
+     * Ensure dedicated Telegram session exists
+     * Creates claude-session if it doesn't exist and starts Claude
+     */
+    _ensureTelegramSession() {
+        try {
+            const result = this.tmuxHelper.ensureSession(TELEGRAM_SESSION);
+
+            if (result.created) {
+                // Session was just created, start Claude
+                this.logger.info('Starting Claude in dedicated Telegram session...');
+                // Start Claude asynchronously (don't block constructor)
+                this.tmuxHelper.startClaude(TELEGRAM_SESSION).catch(err => {
+                    this.logger.error(`Failed to start Claude in ${TELEGRAM_SESSION}: ${err.message}`);
+                });
+            } else {
+                this.logger.info(`Using existing Telegram session: ${TELEGRAM_SESSION}`);
+            }
+        } catch (error) {
+            this.logger.error(`Failed to ensure Telegram session: ${error.message}`);
+        }
     }
 
     /**
@@ -65,21 +95,6 @@ class TelegramChannel extends NotificationChannel {
             token += chars.charAt(Math.floor(Math.random() * chars.length));
         }
         return token;
-    }
-
-    _getCurrentTmuxSession() {
-        try {
-            // Try to get current tmux session
-            const tmuxSession = execSync('tmux display-message -p "#S"', { 
-                encoding: 'utf8',
-                stdio: ['ignore', 'pipe', 'ignore']
-            }).trim();
-            
-            return tmuxSession || null;
-        } catch (error) {
-            // Not in a tmux session or tmux not available
-            return null;
-        }
     }
 
     async _getBotUsername() {
@@ -110,25 +125,19 @@ class TelegramChannel extends NotificationChannel {
             throw new Error('Telegram channel not properly configured');
         }
 
-        // Get current tmux session and conversation content
-        const tmuxSession = this._getCurrentTmuxSession();
-
-        // Skip Slack-related sessions (they're handled via Slack webhook)
-        if (tmuxSession && tmuxSession.startsWith('slack-')) {
-            this.logger.info(`Skipping Telegram notification for Slack session: ${tmuxSession}`);
-            return true; // Return success without sending
-        }
+        // Always use dedicated TELEGRAM_SESSION
+        const tmuxSession = TELEGRAM_SESSION;
 
         // Generate session ID and Token
         const sessionId = uuidv4();
         const token = this._generateToken();
 
-        if (tmuxSession && !notification.metadata) {
+        if (!notification.metadata) {
             // Increase line limit to capture long responses (1000 words ~ 2000-3000 lines)
             const conversation = this.tmuxMonitor.getRecentConversation(tmuxSession, 3000);
 
             // Debug logging
-            this.logger.debug(`Extracted conversation:`);
+            this.logger.debug(`Extracted conversation from ${tmuxSession}:`);
             this.logger.debug(`  User Question: ${conversation.userQuestion?.substring(0, 100)}...`);
             this.logger.debug(`  Claude Response length: ${conversation.claudeResponse?.length || 0} chars`);
             this.logger.debug(`  Claude Response preview: ${conversation.claudeResponse?.substring(0, 200)}...`);
@@ -194,7 +203,7 @@ class TelegramChannel extends NotificationChannel {
         // User question section
         if (notification.metadata?.userQuestion && notification.metadata.userQuestion.trim()) {
             const { preview: questionPreview, truncated: questionTruncated } =
-                ResponseFormatter.getQuestionPreview(notification.metadata.userQuestion, 300);
+                TextFormatter.getQuestionPreview(notification.metadata.userQuestion, 300);
 
             messageText += `📝 <b>Your Request</b>\n`;
             messageText += `<blockquote>${this._escapeHtml(questionPreview)}`;
@@ -207,14 +216,14 @@ class TelegramChannel extends NotificationChannel {
         // Claude response section
         if (notification.metadata?.claudeResponse && notification.metadata.claudeResponse.trim()) {
             const { preview, truncated, totalWords } =
-                ResponseFormatter.getResponsePreview(notification.metadata.claudeResponse, 100);
+                TextFormatter.getResponsePreview(notification.metadata.claudeResponse, 100);
 
             // Format response with Telegram's advanced code detection
             const formattedResponse = this._formatResponseForHtml(preview);
             messageText += `🤖 <b>Claude's Response</b>\n`;
             messageText += `<blockquote>${formattedResponse}`;
             if (truncated) {
-                messageText += `\n\n<i>💡 ${ResponseFormatter.getTruncationMessage(100, totalWords, 'tmux')}</i>`;
+                messageText += `\n\n<i>💡 ${TextFormatter.getTruncationMessage(100, totalWords, 'tmux')}</i>`;
             }
             messageText += `</blockquote>\n`;
         }
@@ -353,12 +362,7 @@ class TelegramChannel extends NotificationChannel {
      * @private
      */
     _escapeHtml(text) {
-        if (!text) return '';
-
-        return text
-            .replace(/&/g, '&amp;')   // Must be first!
-            .replace(/</g, '&lt;')    // Less than
-            .replace(/>/g, '&gt;');   // Greater than
+        return TextFormatter.escapeHtml(text);
     }
 
     async _createSession(sessionId, notification, token) {

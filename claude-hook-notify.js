@@ -46,96 +46,126 @@ async function sendSlackThreadNotification(sessionName, notificationType, projec
     try {
         console.log(`\n${'='.repeat(60)}`);
         console.log(`💼 Slack Thread Notification Handler`);
-        console.log(`${'='.repeat(60)}`);
         console.log(`📊 Session: ${sessionName}`);
-        console.log(`📊 Type: ${notificationType}`);
+        console.log(`📊 Type: ${notificationType}`); // "working" or "completed"
         console.log(`📊 Project: ${projectName}`);
 
-        // Load Slack thread manager to get thread info
+        // Load thread manager
+        const SlackThreadManager = require('./src/utils/slack-thread-manager');
         const threadManager = new SlackThreadManager();
-        console.log(`✓ SlackThreadManager loaded`);
 
+        // Get thread info by session name
         const threadInfo = threadManager.getThreadInfoBySessionName(sessionName);
-
         if (!threadInfo) {
             console.error(`❌ No thread info found for session ${sessionName}`);
-            console.error(`💡 This might happen if:`);
-            console.error(`   - Session mapping was cleared`);
-            console.error(`   - Session name doesn't match pattern`);
-            console.error(`   - Bot was restarted and mappings lost`);
             return false;
         }
 
-        console.log(`✓ Thread info found:`);
-        console.log(`  Channel ID: ${threadInfo.channelId}`);
-        console.log(`  Thread TS: ${threadInfo.threadTs}`);
-        console.log(`  Created: ${threadInfo.createdAt || 'unknown'}`);
+        console.log(`✓ Thread found: ${threadInfo.channelId}:${threadInfo.threadTs}`);
 
-        // Get conversation content from tmux
-        console.log(`📖 Extracting conversation from tmux session...`);
+        // Get message info (botMessageTs, userMessageTs)
+        const messageInfo = threadManager.getThreadMessageInfo(sessionName);
+        if (!messageInfo) {
+            console.error(`❌ No message info found for session ${sessionName}`);
+            return false;
+        }
+
+        // Extract conversation from tmux
         const TmuxMonitor = require('./src/utils/tmux-monitor');
         const tmuxMonitor = new TmuxMonitor();
-
-        // Extract with more lines to capture full response (like Telegram)
         const conversation = tmuxMonitor.getRecentConversation(sessionName, 5000);
 
-        console.log(`✓ Conversation extracted:`);
-        console.log(`  User question length: ${conversation.userQuestion?.length || 0} chars`);
-        console.log(`  Claude response length: ${conversation.claudeResponse?.length || 0} chars`);
+        console.log(`✓ Conversation extracted (${conversation.claudeResponse?.length || 0} chars)`);
 
-        if (conversation.claudeResponse) {
-            console.log(`  Response preview: ${conversation.claudeResponse.substring(0, 150)}...`);
-        } else {
-            console.error(`  ❌ NO RESPONSE CAPTURED!`);
+        // Load Slack channel for API calls
+        const SlackChannel = require('./src/channels/slack/slack');
+        const slackChannel = new SlackChannel({
+            botToken: process.env.SLACK_BOT_TOKEN
+        });
+
+        // Update message based on notification type
+        if (notificationType === 'working') {
+            // === WORKING STATE ===
+            const workingMessage =
+                `:hourglass_flowing_sand: *Claude is working*\n\n` +
+                `:computer: *Session:* \`${sessionName}\`\n` +
+                `:memo: *Request:* ${conversation.userQuestion?.substring(0, 200) || 'Processing...'}\n\n` +
+                `Processing your request...`;
+
+            await slackChannel.updateMessage(
+                threadInfo.channelId,
+                messageInfo.botMessageTs,
+                workingMessage
+            );
+
+            // Update reactions: eyes → hourglass
+            await slackChannel.removeReaction(threadInfo.channelId, messageInfo.userMessageTs, 'eyes');
+            await slackChannel.addReaction(threadInfo.channelId, messageInfo.userMessageTs, 'hourglass_flowing_sand');
+
+            console.log(`✅ Updated to "working" state`);
         }
 
-        if (conversation.userQuestion) {
-            console.log(`  User question preview: ${conversation.userQuestion.substring(0, 100)}...`);
+        if (notificationType === 'completed') {
+            // === COMPLETED STATE ===
+            const TextFormatter = require('./src/utils/text-formatter');
+            const { preview, truncated, totalWords } =
+                TextFormatter.getResponsePreview(conversation.claudeResponse, 100);
+
+            let completedMessage = `:white_check_mark: *Task Completed*\n\n`;
+
+            // Add user question
+            if (conversation.userQuestion && conversation.userQuestion !== 'No user input') {
+                const questionPreview = conversation.userQuestion.substring(0, 300);
+                completedMessage += `📝 *Your Question:*\n> ${questionPreview}\n\n`;
+            }
+
+            // Add response preview
+            if (conversation.claudeResponse && conversation.claudeResponse !== 'No Claude response') {
+                completedMessage += `🤖 *Claude Response Preview:*\n\`\`\`\n${preview}\n\`\`\``;
+
+                if (truncated) {
+                    completedMessage += `\n\n_💡 Showing first 100 of ${totalWords} words. Full response in tmux._`;
+                }
+            }
+
+            completedMessage += `\n\n:computer: _Session: \`${sessionName}\`_`;
+
+            await slackChannel.updateMessage(
+                threadInfo.channelId,
+                messageInfo.botMessageTs,
+                completedMessage
+            );
+
+            // Update reactions: hourglass → checkmark
+            await slackChannel.removeReaction(threadInfo.channelId, messageInfo.userMessageTs, 'hourglass_flowing_sand');
+            await slackChannel.addReaction(threadInfo.channelId, messageInfo.userMessageTs, 'white_check_mark');
+
+            console.log(`✅ Updated to "completed" state`);
         }
 
-        if (conversation.claudeResponse) {
-            console.log(`  Claude response preview: ${conversation.claudeResponse.substring(0, 100)}...`);
-        } else {
-            console.warn(`⚠️ No Claude response captured from tmux!`);
-        }
-
-        // Get the response callback from the thread manager
-        // This will trigger the webhook's _handleClaudeResponse which updates the message
-        const callbackData = threadManager.responseCallbacks.get(sessionName);
-
-        if (callbackData && callbackData.callback) {
-            console.log(`✓ Found response callback for session`);
-            console.log(`📤 Triggering webhook state update via callback...`);
-
-            // Call the webhook's callback which will update the thread state
-            await callbackData.callback({
-                type: notificationType === 'completed' ? 'taskCompleted' : 'waitingForInput',
-                sessionName: sessionName,
-                userQuestion: conversation.userQuestion || 'No user input captured',
-                claudeResponse: conversation.claudeResponse || 'No response',
-                timestamp: new Date().toISOString()
-            });
-
-            console.log(`✅ Slack thread state updated via webhook!`);
-            console.log(`   Channel: ${threadInfo.channelId}`);
-            console.log(`   Thread: ${threadInfo.threadTs}`);
-            console.log(`${'='.repeat(60)}\n`);
-            return true;
-        } else {
-            console.error(`❌ No response callback found for session ${sessionName}`);
-            console.error(`💡 The webhook handler may not be running or callback wasn't registered`);
-            console.log(`${'='.repeat(60)}\n`);
-            return false;
-        }
-    } catch (error) {
-        console.error(`\n❌ Slack thread notification error:`, error.message);
-        console.error(`Stack trace:`, error.stack);
-        console.error(`💡 Common issues:`);
-        console.error(`   - Webhook handler not running`);
-        console.error(`   - Callback not registered for session`);
-        console.error(`   - Invalid thread data`);
         console.log(`${'='.repeat(60)}\n`);
+        return true;
+
+    } catch (error) {
+        console.error(`❌ Slack notification error:`, error.message);
+        console.error(error.stack);
         return false;
+    }
+}
+
+/**
+ * Get current tmux session name
+ * @returns {string|null} Session name or null if not in tmux
+ */
+function getTmuxSession() {
+    try {
+        const { execSync } = require('child_process');
+        return execSync('tmux display-message -p "#S"', {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
+    } catch (error) {
+        return null;
     }
 }
 
@@ -143,10 +173,42 @@ async function sendHookNotification() {
     try {
         const notificationType = process.argv[2] || 'completed';
         console.log('='.repeat(80));
-        console.log('🔔 STOP HOOK FIRED');
+        console.log('🔔 HOOK FIRED');
         console.log(`📊 Type: ${notificationType}`);
         console.log(`📊 CWD: ${process.cwd()}`);
-        
+
+        // Get current tmux session
+        const tmuxSession = getTmuxSession();
+        console.log(`🖥️ Tmux session: ${tmuxSession}`);
+
+        // === SESSION FILTERING ===
+
+        // Handle Slack threads (slack-*)
+        if (tmuxSession && tmuxSession.startsWith('slack-')) {
+            console.log(`📱 SLACK SESSION DETECTED: ${tmuxSession}`);
+            const result = await sendSlackThreadNotification(
+                tmuxSession,
+                notificationType,
+                path.basename(process.cwd())
+            );
+            console.log(`✅ Slack notification: ${result ? 'SUCCESS' : 'FAILED'}`);
+            console.log('='.repeat(80));
+            return;
+        }
+
+        // Handle Telegram (claude-session)
+        if (tmuxSession === 'claude-session') {
+            console.log(`📱 TELEGRAM SESSION DETECTED: ${tmuxSession}`);
+            // Continue to standard notification flow (Telegram channel)
+        } else {
+            // Skip all other sessions (user's interactive work)
+            console.log(`⏭️ Skipping notification for session: ${tmuxSession}`);
+            console.log(`   Only claude-session and slack-* trigger notifications`);
+            console.log('='.repeat(80));
+            return;
+        }
+
+        // Standard notification flow for Telegram
         const channels = [];
         const results = [];
         
@@ -212,36 +274,11 @@ async function sendHookNotification() {
         // Get current working directory and tmux session
         const currentDir = process.cwd();
         const projectName = path.basename(currentDir);
-        
-        // Try to get current tmux session
-        let tmuxSession = process.env.TMUX_SESSION || 'claude-real';
-        try {
-            const { execSync } = require('child_process');
-            const sessionOutput = execSync('tmux display-message -p "#S"', {
-                encoding: 'utf8',
-                stdio: ['ignore', 'pipe', 'ignore']
-            }).trim();
-            if (sessionOutput) {
-                tmuxSession = sessionOutput;
-            }
-        } catch (error) {
-            // Not in tmux or tmux not available, use default
-        }
 
-        // Check if this is a Slack session and handle it specially
-        if (tmuxSession && tmuxSession.startsWith('slack-')) {
-            console.log(`\n${'='.repeat(80)}`);
-            console.log(`📱 SLACK SESSION DETECTED`);
-            console.log(`📊 Session: ${tmuxSession}`);
-            console.log(`📊 Type: ${notificationType}`);
-            console.log(`📊 Project: ${projectName}`);
-            console.log(`${'='.repeat(80)}\n`);
+        // This code is now handled by session filtering above
+        // All Slack sessions are handled by sendSlackThreadNotification
+        // Only claude-session reaches here for Telegram notifications
 
-            const result = await sendSlackThreadNotification(tmuxSession, notificationType, projectName);
-            console.log(`\n📋 Slack notification result: ${result ? 'SUCCESS' : 'FAILED'}\n`);
-            return; // Skip other channels for Slack sessions
-        }
-        
         // Create notification
         const notification = {
             type: notificationType,
@@ -252,7 +289,7 @@ async function sendHookNotification() {
         };
         
         console.log(`📱 Sending ${notificationType} notification for project: ${projectName}`);
-        console.log(`🖥️ Tmux session: ${tmuxSession}`);
+        console.log(`🖥️ Tmux session: claude-session`);
         
         // Send notifications to all configured channels
         for (const { name, channel } of channels) {

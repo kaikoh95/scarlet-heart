@@ -3,21 +3,17 @@
  * Handles incoming Slack app_mention events with tmux-based Claude sessions
  */
 
-const express = require('express');
+const BaseWebhookHandler = require('../../core/base-webhook-handler');
+const AuthorizationService = require('../../utils/authorization-service');
 const crypto = require('crypto');
 const axios = require('axios');
-const path = require('path');
-const fs = require('fs');
-const Logger = require('../../core/logger');
 const SlackThreadManager = require('../../utils/slack-thread-manager');
-const ResponseFormatter = require('../../utils/response-formatter');
+const TextFormatter = require('../../utils/text-formatter');
 
-class SlackWebhookHandler {
+class SlackWebhookHandler extends BaseWebhookHandler {
     constructor(config = {}) {
-        this.config = config;
-        this.logger = new Logger('SlackWebhook');
+        super(config, 'slack-webhook');
         this.threadManager = new SlackThreadManager();
-        this.app = express();
         this.apiBaseUrl = 'https://slack.com/api';
         this.botUserId = null; // Cache for bot user ID
 
@@ -28,14 +24,15 @@ class SlackWebhookHandler {
         // }
         this.threadMessages = new Map();
 
-        this._setupMiddleware();
-        this._setupRoutes();
+        // Add Slack-specific middleware
+        this._setupSlackMiddleware();
     }
 
-    _setupMiddleware() {
-        // Parse JSON for all requests
-        this.app.use(express.json());
+    _getWebhookPath() {
+        return '/webhook/slack';
+    }
 
+    _setupSlackMiddleware() {
         // Verify Slack requests
         this.app.use('/webhook/slack', this._verifySlackRequest.bind(this));
     }
@@ -73,16 +70,6 @@ class SlackWebhookHandler {
         }
 
         next();
-    }
-
-    _setupRoutes() {
-        // Slack webhook endpoint
-        this.app.post('/webhook/slack', this._handleWebhook.bind(this));
-
-        // Health check endpoint
-        this.app.get('/health', (req, res) => {
-            res.json({ status: 'ok', service: 'slack-webhook' });
-        });
     }
 
     async _handleWebhook(req, res) {
@@ -466,10 +453,10 @@ class SlackWebhookHandler {
         // Add user question in block format if available
         if (userQuestion && userQuestion !== 'No user input') {
             const { preview: questionPreview, truncated: questionTruncated } =
-                ResponseFormatter.getQuestionPreview(userQuestion, 300);
+                TextFormatter.getQuestionPreview(userQuestion, 300);
 
             message += `📝 *Your Question:*\n`;
-            message += ResponseFormatter.formatResponseForSlack(questionPreview, true);
+            message += TextFormatter.formatResponseForSlack(questionPreview, true);
 
             if (questionTruncated) {
                 message += '\n> _...(truncated)_';
@@ -480,13 +467,13 @@ class SlackWebhookHandler {
         // Add the response preview
         if (claudeResponse && claudeResponse.length > 0 && claudeResponse !== 'No Claude response') {
             const { preview, truncated, totalWords } =
-                ResponseFormatter.getResponsePreview(claudeResponse, 100);
+                TextFormatter.getResponsePreview(claudeResponse, 100);
 
             message += `🤖 *Claude Response Preview:*\n`;
-            message += ResponseFormatter.formatResponseForSlack(preview, true);
+            message += TextFormatter.formatResponseForSlack(preview, true);
 
             if (truncated) {
-                message += `\n\n_💡 ${ResponseFormatter.getTruncationMessage(100, totalWords, 'tmux session')}_`;
+                message += `\n\n_💡 ${TextFormatter.getTruncationMessage(100, totalWords, 'tmux session')}_`;
             }
         } else {
             message += '_No response captured_';
@@ -619,32 +606,7 @@ class SlackWebhookHandler {
     }
 
     _isAuthorized(userId, channelId) {
-        // Check whitelist first
-        const whitelist = this.config.whitelist || [];
-
-        // If user or channel is in whitelist, authorize
-        if (whitelist.length > 0) {
-            if (whitelist.includes(String(channelId)) || whitelist.includes(String(userId))) {
-                return true;
-            }
-            // Whitelist exists but user/channel not in it
-            return false;
-        }
-
-        // No whitelist - check configured channel
-        const configuredChannelId = this.config.channelId;
-        if (!configuredChannelId) {
-            // No restrictions - allow all channels and DMs (open mode)
-            return true;
-        }
-
-        // Check if matches configured channel
-        // Note: DMs won't match channel ID, so they'll be blocked unless in whitelist
-        if (String(channelId) === String(configuredChannelId)) {
-            return true;
-        }
-
-        return false;
+        return AuthorizationService.isAuthorized(userId, channelId, this.config);
     }
 
     async _getBotUserId() {

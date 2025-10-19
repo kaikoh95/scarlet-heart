@@ -17,6 +17,7 @@ class SlackThreadManager {
         this.monitors = new Map(); // Map of sessionName -> TmuxMonitor instance
         this.responseCallbacks = new Map(); // Map of sessionName -> callback data
         this.monitoringStartTimes = new Map(); // Map of sessionName -> timestamp when monitoring started
+        this.threadMessageInfo = new Map(); // For hook access to message timestamps
         this._ensureDirectories();
         this._loadMappings();
     }
@@ -843,6 +844,25 @@ class SlackThreadManager {
 
         this.logger.warn(`No thread info found for session ${sessionName}`);
         return null;
+    }
+
+    /**
+     * Store message info for hook access
+     * @param {string} sessionName - Session name
+     * @param {Object} messageInfo - Message info object with botMessageTs, userMessageTs, etc.
+     */
+    setThreadMessageInfo(sessionName, messageInfo) {
+        this.threadMessageInfo.set(sessionName, messageInfo);
+        this.logger.info(`Stored message info for session ${sessionName}`);
+    }
+
+    /**
+     * Get message info for hooks
+     * @param {string} sessionName - Session name
+     * @returns {Object|undefined} Message info object
+     */
+    getThreadMessageInfo(sessionName) {
+        return this.threadMessageInfo.get(sessionName);
     }
 
     /**

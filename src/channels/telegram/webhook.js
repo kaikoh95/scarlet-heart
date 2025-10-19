@@ -3,41 +3,27 @@
  * Handles incoming Telegram messages and commands
  */
 
-const express = require('express');
-const crypto = require('crypto');
+const BaseWebhookHandler = require('../../core/base-webhook-handler');
+const AuthorizationService = require('../../utils/authorization-service');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
-const Logger = require('../../core/logger');
 const ControllerInjector = require('../../utils/controller-injector');
 
-class TelegramWebhookHandler {
+// Dedicated session for Telegram (matches telegram.js)
+const TELEGRAM_SESSION = 'claude-session';
+
+class TelegramWebhookHandler extends BaseWebhookHandler {
     constructor(config = {}) {
-        this.config = config;
-        this.logger = new Logger('TelegramWebhook');
+        super(config, 'telegram-webhook');
         this.sessionsDir = path.join(__dirname, '../../data/sessions');
         this.injector = new ControllerInjector();
-        this.app = express();
         this.apiBaseUrl = 'https://api.telegram.org';
         this.botUsername = null; // Cache for bot username
-        
-        this._setupMiddleware();
-        this._setupRoutes();
     }
 
-    _setupMiddleware() {
-        // Parse JSON for all requests
-        this.app.use(express.json());
-    }
-
-    _setupRoutes() {
-        // Telegram webhook endpoint
-        this.app.post('/webhook/telegram', this._handleWebhook.bind(this));
-
-        // Health check endpoint
-        this.app.get('/health', (req, res) => {
-            res.json({ status: 'ok', service: 'telegram-webhook' });
-        });
+    _getWebhookPath() {
+        return '/webhook/telegram';
     }
 
     /**
@@ -137,21 +123,20 @@ class TelegramWebhookHandler {
         }
 
         try {
-            // Inject command into tmux session
-            const tmuxSession = session.tmuxSession || 'default';
-            await this.injector.injectCommand(command, tmuxSession);
-            
+            // Always inject to dedicated TELEGRAM_SESSION
+            await this.injector.injectCommand(command, TELEGRAM_SESSION);
+
             // Send confirmation
-            await this._sendMessage(chatId, 
-                `✅ *Command sent successfully*\n\n📝 *Command:* ${command}\n🖥️ *Session:* ${tmuxSession}\n\nClaude is now processing your request...`,
+            await this._sendMessage(chatId,
+                `✅ *Command sent successfully*\n\n📝 *Command:* ${command}\n🖥️ *Session:* ${TELEGRAM_SESSION}\n\nClaude is now processing your request...`,
                 { parse_mode: 'Markdown' });
-            
+
             // Log command execution
-            this.logger.info(`Command injected - User: ${chatId}, Token: ${token}, Command: ${command}`);
-            
+            this.logger.info(`Command injected to ${TELEGRAM_SESSION} - User: ${chatId}, Token: ${token}, Command: ${command}`);
+
         } catch (error) {
             this.logger.error('Command injection failed:', error.message);
-            await this._sendMessage(chatId, 
+            await this._sendMessage(chatId,
                 `❌ *Command execution failed:* ${error.message}`,
                 { parse_mode: 'Markdown' });
         }
@@ -213,22 +198,7 @@ class TelegramWebhookHandler {
     }
 
     _isAuthorized(userId, chatId) {
-        // Check whitelist
-        const whitelist = this.config.whitelist || [];
-        
-        if (whitelist.includes(String(chatId)) || whitelist.includes(String(userId))) {
-            return true;
-        }
-        
-        // If no whitelist configured, allow configured chat/user
-        if (whitelist.length === 0) {
-            const configuredChatId = this.config.chatId || this.config.groupId;
-            if (configuredChatId && String(chatId) === String(configuredChatId)) {
-                return true;
-            }
-        }
-        
-        return false;
+        return AuthorizationService.isAuthorized(userId, chatId, this.config);
     }
 
     async _getBotUsername() {
