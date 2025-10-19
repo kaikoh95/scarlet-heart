@@ -9,7 +9,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const TraceCapture = require('./trace-capture');
-const ResponseFormatter = require('./response-formatter');
+const TextFormatter = require('./text-formatter');
 
 class TmuxMonitor extends EventEmitter {
     constructor(sessionName = null) {
@@ -785,7 +785,7 @@ class TmuxMonitor extends EventEmitter {
 
         // Clean up user question - extract actual user input from slash command expansion
         if (userQuestion) {
-            userQuestion = ResponseFormatter.cleanUserQuestion(userQuestion);
+            userQuestion = TextFormatter.cleanUserQuestion(userQuestion);
         }
 
         // If we didn't find a question in the standard format, look for any recent text input

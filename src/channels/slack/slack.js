@@ -318,10 +318,8 @@ class SlackChannel extends NotificationChannel {
      * @private
      */
     _escapeSlackText(text) {
-        return text
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
+        const TextFormatter = require('../../utils/text-formatter');
+        return TextFormatter.escapeMarkdown(text);
     }
 
     /**
