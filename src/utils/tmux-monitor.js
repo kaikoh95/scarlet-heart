@@ -9,6 +9,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const TraceCapture = require('./trace-capture');
+const ResponseFormatter = require('./response-formatter');
 
 class TmuxMonitor extends EventEmitter {
     constructor(sessionName = null) {
@@ -21,6 +22,7 @@ class TmuxMonitor extends EventEmitter {
         this.outputBuffer = [];
         this.maxBufferSize = 1000; // Keep last 1000 lines
         this.checkInterval = 2000; // Check every 2 seconds
+        this.hasSeenPrompt = false; // Track if we've seen the prompt for current response
         
         // Claude completion patterns (adapted for Claude Code's actual output format)
         this.completionPatterns = [
@@ -154,24 +156,24 @@ class TmuxMonitor extends EventEmitter {
 
     _checkForChanges() {
         const currentContent = this._captureCurrentContent();
-        
+
         if (currentContent !== this.lastPaneContent) {
             // Get new content (lines that were added)
             const newLines = this._getNewLines(this.lastPaneContent, currentContent);
-            
+
             if (newLines.length > 0) {
                 // Add to buffer
                 this.outputBuffer.push(...newLines);
-                
+
                 // Trim buffer if too large
                 if (this.outputBuffer.length > this.maxBufferSize) {
                     this.outputBuffer = this.outputBuffer.slice(-this.maxBufferSize);
                 }
-                
+
                 // Check for completion patterns
                 this._analyzeNewContent(newLines);
             }
-            
+
             this.lastPaneContent = currentContent;
         }
     }
@@ -205,25 +207,52 @@ class TmuxMonitor extends EventEmitter {
 
     _analyzeNewContent(newLines) {
         const recentText = newLines.join('\n');
-        
+
         // Also check the entire recent buffer for context
         const bufferText = this.outputBuffer.slice(-20).join('\n');
-        
+
         console.log('🔍 Analyzing new content:', newLines.slice(0, 2).map(line => line.substring(0, 50))); // Debug log
-        
+
+        // Check if user sent new input - reset the prompt flag
+        if (recentText.match(/^>\s*.+/) || recentText.includes('/bg-workflow')) {
+            console.log('📥 User input detected, resetting prompt flag');
+            this.hasSeenPrompt = false;
+        }
+
         // Look for Claude response completion patterns
         const hasResponseEnd = this._detectResponseCompletion(recentText, bufferText);
         const hasTaskCompletion = this._detectTaskCompletion(recentText, bufferText);
-        
+
         if (hasTaskCompletion || hasResponseEnd) {
             console.log('🎯 Task completion detected');
             this._handleTaskCompletion(newLines);
         }
-        // Don't constantly trigger waiting notifications for static content
-        else if (this._shouldTriggerWaitingNotification(recentText)) {
-            console.log('⏳ New waiting state detected');
+        // Check if prompt box appeared (only trigger once per response)
+        else if (!this.hasSeenPrompt && this._detectPromptBox(recentText)) {
+            console.log('⏳ Prompt box detected - Claude waiting for input');
+            this.hasSeenPrompt = true;
             this._handleWaitingForInput(newLines);
         }
+        // Legacy waiting detection for other patterns
+        else if (!this.hasSeenPrompt && this._shouldTriggerWaitingNotification(recentText)) {
+            console.log('⏳ New waiting state detected');
+            this.hasSeenPrompt = true;
+            this._handleWaitingForInput(newLines);
+        }
+    }
+
+    /**
+     * Detect if the prompt box appeared (indicates Claude is ready for input)
+     */
+    _detectPromptBox(text) {
+        // Look for the command input box that appears after Claude finishes
+        // Check for the horizontal line separator followed by prompt
+        const hasLineSeparator = text.includes('────────────────────');
+        const hasPrompt = text.match(/^>\s*$/m) || text.includes('> \n');
+        const hasShortcuts = text.includes('? for shortcuts');
+
+        // Claude Code shows: ────────\n> \n──────── when ready
+        return (hasLineSeparator && hasPrompt) || hasShortcuts;
     }
     
     _detectResponseCompletion(recentText, bufferText) {
@@ -710,13 +739,18 @@ class TmuxMonitor extends EventEmitter {
             for (let i = lastUserInputIndex + 1; i < lines.length; i++) {
                 const line = lines[i].trim();
 
-                // Skip empty lines, box characters, and prompts
+                // Skip empty lines, box characters, prompts, and slash command metadata
                 if (!line ||
                     line.match(/^[╭╰│─]+$/) ||
                     line.includes('? for shortcuts') ||
                     line.startsWith('│ > ') ||
                     line === '>' ||
-                    line.match(/^>\s*$/)) {
+                    line.match(/^>\s*$/) ||
+                    line.includes('⎿  Allowed') ||  // Skip permission lines
+                    line.match(/^Context\]/) ||      // Skip context continuation
+                    line.includes('is running…') ||  // Skip slash command status
+                    line.match(/^✶\s+.*…/) ||        // Skip "Dilly-dallying..." etc
+                    line.match(/^∴\s+Thinking…/)) {  // Skip "Thinking..." indicator
                     // If we already found content and hit a prompt, stop
                     if (foundContent && (line.startsWith('│ > ') || line === '>' || line.match(/^>\s*$/))) {
                         break;
@@ -724,9 +758,16 @@ class TmuxMonitor extends EventEmitter {
                     continue;
                 }
 
-                // This looks like actual response content
-                if (line.length > 2) {
-                    foundContent = true;
+                // Look for actual Claude response content
+                // Start capturing when we find ● or ⏺, then capture all following content
+                if (!foundContent) {
+                    // Look for response start indicators
+                    if (line.startsWith('●') || line.startsWith('⏺')) {
+                        foundContent = true;
+                        fallbackResponseLines.push(line);
+                    }
+                } else {
+                    // Once we've found content, capture everything until we hit a prompt
                     fallbackResponseLines.push(line);
                 }
             }
@@ -741,6 +782,11 @@ class TmuxMonitor extends EventEmitter {
         // if (claudeResponse.length > 500) {
         //     claudeResponse = claudeResponse.substring(0, 497) + '...';
         // }
+
+        // Clean up user question - extract actual user input from slash command expansion
+        if (userQuestion) {
+            userQuestion = ResponseFormatter.cleanUserQuestion(userQuestion);
+        }
 
         // If we didn't find a question in the standard format, look for any recent text input
         if (!userQuestion) {

@@ -9,6 +9,7 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
 const TmuxMonitor = require('../../utils/tmux-monitor');
+const ResponseFormatter = require('../../utils/response-formatter');
 const { execSync } = require('child_process');
 
 class TelegramChannel extends NotificationChannel {
@@ -192,35 +193,28 @@ class TelegramChannel extends NotificationChannel {
 
         // User question section
         if (notification.metadata?.userQuestion && notification.metadata.userQuestion.trim()) {
-            const userQuestion = notification.metadata.userQuestion.trim();
-            const questionPreview = userQuestion.length > 300
-                ? userQuestion.substring(0, 300) + '...'
-                : userQuestion;
+            const { preview: questionPreview, truncated: questionTruncated } =
+                ResponseFormatter.getQuestionPreview(notification.metadata.userQuestion, 300);
 
             messageText += `📝 <b>Your Request</b>\n`;
-            messageText += `<blockquote>${this._escapeHtml(questionPreview)}</blockquote>\n`;
+            messageText += `<blockquote>${this._escapeHtml(questionPreview)}`;
+            if (questionTruncated) {
+                messageText += '...';
+            }
+            messageText += `</blockquote>\n`;
         }
 
         // Claude response section
         if (notification.metadata?.claudeResponse && notification.metadata.claudeResponse.trim()) {
-            const fullResponse = notification.metadata.claudeResponse.trim();
-            const words = fullResponse.split(/\s+/);
+            const { preview, truncated, totalWords } =
+                ResponseFormatter.getResponsePreview(notification.metadata.claudeResponse, 100);
 
-            // Show last 100 words as preview
-            let displayResponse = fullResponse;
-            let truncated = false;
-
-            if (words.length > 100) {
-                displayResponse = words.slice(-100).join(' ');
-                truncated = true;
-            }
-
-            // Format response
-            const formattedResponse = this._formatResponseForHtml(displayResponse);
+            // Format response with Telegram's advanced code detection
+            const formattedResponse = this._formatResponseForHtml(preview);
             messageText += `🤖 <b>Claude's Response</b>\n`;
             messageText += `<blockquote>${formattedResponse}`;
             if (truncated) {
-                messageText += `\n\n<i>💡 Last 100 of ${words.length} words · Full in tmux</i>`;
+                messageText += `\n\n<i>💡 ${ResponseFormatter.getTruncationMessage(100, totalWords, 'tmux')}</i>`;
             }
             messageText += `</blockquote>\n`;
         }

@@ -60,11 +60,10 @@ class SlackChannel extends NotificationChannel {
 
         // Check if this is a thread notification
         if (notification.metadata?.slackThreadTs) {
-            return await this.sendToThread(
-                notification.metadata.slackChannelId || this.config.channelId,
-                notification.metadata.slackThreadTs,
-                notification
-            );
+            // For webhook-managed threads, skip notification system entirely
+            // The webhook handler manages all messages for interactive sessions
+            this.logger.info(`⏭️ Skipping notification for webhook-managed thread ${notification.metadata.slackThreadTs}`);
+            return true; // Return success to avoid errors
         }
 
         // Determine recipient channel
@@ -118,11 +117,18 @@ class SlackChannel extends NotificationChannel {
      */
     async sendToThread(channelId, threadTs, notification) {
         try {
-            this.logger.info(`Sending notification to Slack thread ${threadTs} in channel ${channelId}`);
+            this.logger.info(`Sending notification to Slack thread ${threadTs} in channel ${channelId}, type: ${notification.type}`);
 
             if (!channelId || !threadTs) {
                 this.logger.error('Missing channelId or threadTs for thread notification');
                 return false;
+            }
+
+            // Skip "waiting" notifications for webhook-managed sessions
+            // The webhook handler already sends placeholder messages
+            if (notification.type !== 'completed' && notification.type !== 'error') {
+                this.logger.info(`⏭️ Skipping non-completed notification (webhook handler manages placeholders)`);
+                return true; // Return success to avoid errors
             }
 
             // Generate beautiful Block Kit formatted message

@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const Logger = require('../../core/logger');
 const SlackThreadManager = require('../../utils/slack-thread-manager');
+const ResponseFormatter = require('../../utils/response-formatter');
 
 class SlackWebhookHandler {
     constructor(config = {}) {
@@ -19,6 +20,13 @@ class SlackWebhookHandler {
         this.app = express();
         this.apiBaseUrl = 'https://slack.com/api';
         this.botUserId = null; // Cache for bot user ID
+
+        // Track message state per thread for proper lifecycle management
+        // Key: `${channelId}:${threadTs}`, Value: {
+        //   userMessageTs, botMessageTs, state: 'starting'|'working'|'completed',
+        //   channelId, threadTs, timestamp
+        // }
+        this.threadMessages = new Map();
 
         this._setupMiddleware();
         this._setupRoutes();
@@ -196,24 +204,48 @@ class SlackWebhookHandler {
             this.logger.info(`📥 Processing prompt for channel ${channelId}, thread ${threadTs}`);
             this.logger.info(`   Message TS: ${messageTs}, Thread TS: ${threadTs}`);
 
-            // Add acknowledgment reaction immediately
-            await this._addReaction(channelId, messageTs, 'eyes');
+            const threadKey = `${channelId}:${threadTs}`;
+            const promptPreview = prompt.substring(0, 100) + (prompt.length > 100 ? '...' : '');
 
             // Get or create tmux session for this thread
             const session = this.threadManager.getOrCreateSession(channelId, threadTs);
             this.logger.info(`   Session: ${session.sessionName}, isNew: ${session.isNew}`);
 
             if (session.isNew) {
-                // New thread - start Claude with /bg-workflow
-                this.logger.info(`🆕 Starting new Claude session for thread ${threadTs}`);
+                // === STATE 1: STARTING ===
+                // Send initial "Starting" message
+                const startingMessage = `:hourglass_flowing_sand: *Starting new Claude session*\n\n` +
+                    `:computer: *Session:* \`${session.sessionName}\`\n` +
+                    `:memo: *Your Request:* ${promptPreview}\n\n` +
+                    `Setting up your Claude session...`;
 
-                // Set up response callback for this session
-                // Mark this session as "in startup" to ignore initial waiting events
+                const botMessageTs = await this._sendMessage(channelId, startingMessage, threadTs, false);
+
+                if (!botMessageTs) {
+                    throw new Error('Failed to send starting message');
+                }
+
+                // Store thread data for state management
+                this.threadMessages.set(threadKey, {
+                    userMessageTs: messageTs,
+                    botMessageTs: botMessageTs,
+                    state: 'starting',
+                    channelId: channelId,
+                    threadTs: threadTs,
+                    sessionName: session.sessionName,
+                    prompt: prompt,
+                    timestamp: Date.now()
+                });
+
+                // Add eyes reaction to user message
+                await this._addReaction(channelId, messageTs, 'eyes');
+
+                // Set up response callback
                 this.threadManager.setResponseCallback(session.sessionName, async (responseData) => {
                     await this._handleClaudeResponse(channelId, threadTs, responseData);
                 }, { isNewSession: true });
 
-                // Get thread conversation history (always fetch to include all context)
+                // Get thread conversation history
                 let threadContext = '';
                 try {
                     const threadHistory = await this._getThreadConversation(channelId, threadTs);
@@ -223,110 +255,114 @@ class SlackWebhookHandler {
                     }
                 } catch (contextError) {
                     this.logger.warn(`⚠️ Failed to get thread context: ${contextError.message}`);
-                    // Continue without thread context
                 }
 
-                // Construct the full prompt for /bg-workflow
-                // Replace newlines with spaces to avoid triggering multi-line input mode
+                // Construct the full prompt
                 const fullPrompt = (threadContext + `User request: ${prompt}`)
-                    .replace(/\n/g, ' ')  // Replace newlines with spaces
-                    .replace(/\s+/g, ' ')  // Collapse multiple spaces
+                    .replace(/\n/g, ' ')
+                    .replace(/\s+/g, ' ')
                     .trim();
-                this.logger.info(`📝 Full prompt length: ${fullPrompt.length} chars`);
 
                 try {
-                    // Start Claude in the tmux session with /bg-workflow
+                    // Start Claude in tmux
                     await this.threadManager.startClaudeInSession(session.sessionName, `/bg-workflow ${fullPrompt}`);
 
-                    // Replace eyes with hourglass to show processing
-                    await this._removeReaction(channelId, messageTs, 'eyes');
-                    await this._addReaction(channelId, messageTs, 'hourglass_flowing_sand');
+                    // === STATE 2: WORKING ===
+                    // Update to "Working" state
+                    await this._updateThreadState(channelId, threadTs, 'working', {
+                        sessionName: session.sessionName,
+                        prompt: promptPreview
+                    });
 
-                    // Send confirmation
-                    await this._sendMessage(
-                        channelId,
-                        `:white_check_mark: *Started new Claude session*\n\n` +
-                        `:computer: *Session:* \`${session.sessionName}\`\n` +
-                        `:memo: *Task:* ${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}\n\n` +
-                        `Claude is now working on your request in the background...`,
-                        threadTs
-                    );
                 } catch (startError) {
                     this.logger.error(`❌ Failed to start Claude session: ${startError.message}`);
-                    await this._sendMessage(
+                    // Update message to show error
+                    await this._updateMessage(
                         channelId,
+                        botMessageTs,
                         `:x: *Failed to start Claude session*\n\n` +
                         `Error: ${startError.message}\n\n` +
-                        `Please check that tmux is installed and the session was created properly.`,
-                        threadTs
+                        `Please check that tmux is installed and the session was created properly.`
                     );
+                    await this._removeReaction(channelId, messageTs, 'eyes');
                     throw startError;
                 }
             } else {
-                // Existing thread - continue the conversation in the existing Claude session
+                // === CONTINUING CONVERSATION ===
                 this.logger.info(`♻️ Continuing existing Claude session: ${session.sessionName}`);
 
-                // Ensure monitoring is active (in case the bot restarted)
-                this.threadManager.ensureMonitoring(session.sessionName);
+                // Send initial message
+                const continuingMessage = `:hourglass_flowing_sand: *Sending message to Claude*\n\n` +
+                    `:computer: *Session:* \`${session.sessionName}\`\n` +
+                    `:memo: *Your Request:* ${promptPreview}\n\n` +
+                    `Preparing your message...`;
 
-                // Ensure response callback is set (in case the bot restarted)
+                const botMessageTs = await this._sendMessage(channelId, continuingMessage, threadTs);
+
+                if (!botMessageTs) {
+                    throw new Error('Failed to send continuation message');
+                }
+
+                // Store/update thread data
+                this.threadMessages.set(threadKey, {
+                    userMessageTs: messageTs,
+                    botMessageTs: botMessageTs,
+                    state: 'starting',
+                    channelId: channelId,
+                    threadTs: threadTs,
+                    sessionName: session.sessionName,
+                    prompt: prompt,
+                    timestamp: Date.now()
+                });
+
+                // Add eyes reaction
+                await this._addReaction(channelId, messageTs, 'eyes');
+
+                // Ensure monitoring and callbacks
+                this.threadManager.ensureMonitoring(session.sessionName);
                 this.threadManager.setResponseCallback(session.sessionName, async (responseData) => {
                     await this._handleClaudeResponse(channelId, threadTs, responseData);
                 }, { isNewSession: false });
 
-                // Get ONLY new user messages since the last bot response
-                // This avoids sending Claude messages it has already seen
+                // Get new user messages
                 let newMessagesContext = '';
                 try {
                     const newMessages = await this._getNewUserMessagesForContinuation(channelId, threadTs);
                     if (newMessages) {
                         newMessagesContext = newMessages + '\n\n';
-                        this.logger.info(`✓ Captured ${newMessages.split('User:').length - 1} new user message(s) for continuation`);
-                    } else {
-                        // If no new messages found (shouldn't happen normally), use current prompt only
-                        this.logger.info(`ℹ️ No new messages context, using current prompt only`);
+                        this.logger.info(`✓ Captured ${newMessages.split('User:').length - 1} new user message(s)`);
                     }
                 } catch (contextError) {
                     this.logger.warn(`⚠️ Failed to get new messages: ${contextError.message}`);
-                    // Continue with just the prompt if context fetch fails
                 }
 
-                // Construct the full prompt for /bg-workflow continuation
-                // Always prepend /bg-workflow to continue the bg-workflow session
-                // Replace newlines with spaces to avoid triggering multi-line input mode
+                // Construct the full prompt
                 const fullPrompt = (newMessagesContext + `Current user request: ${prompt}`)
-                    .replace(/\n/g, ' ')  // Replace newlines with spaces
-                    .replace(/\s+/g, ' ')  // Collapse multiple spaces
+                    .replace(/\n/g, ' ')
+                    .replace(/\s+/g, ' ')
                     .trim();
-                this.logger.info(`📝 Full continuation prompt length: ${fullPrompt.length} chars`);
 
                 try {
-                    // Send to the existing bg-workflow session with /bg-workflow prefix
+                    // Send to the existing session
                     await this.threadManager.sendToSession(session.sessionName, `/bg-workflow ${fullPrompt}`);
 
-                    // Replace eyes with hourglass to show processing
-                    await this._removeReaction(channelId, messageTs, 'eyes');
-                    await this._addReaction(channelId, messageTs, 'hourglass_flowing_sand');
+                    // Update to "Working" state
+                    await this._updateThreadState(channelId, threadTs, 'working', {
+                        sessionName: session.sessionName,
+                        prompt: promptPreview
+                    });
 
-                    // Send confirmation
-                    await this._sendMessage(
-                        channelId,
-                        `:speech_balloon: *Message sent to Claude*\n\n` +
-                        `:computer: *Session:* \`${session.sessionName}\`\n` +
-                        `:memo: *Message:* ${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}\n\n` +
-                        `Continuing the conversation...`,
-                        threadTs
-                    );
                 } catch (sendError) {
                     this.logger.error(`❌ Failed to send to existing session: ${sendError.message}`);
-                    await this._sendMessage(
+                    await this._updateMessage(
                         channelId,
+                        botMessageTs,
                         `:x: *Failed to send message to Claude*\n\n` +
                         `Error: ${sendError.message}\n\n` +
                         `Session: \`${session.sessionName}\`\n\n` +
-                        `The session may have been terminated. Try starting a new thread.`,
-                        threadTs
+                        `The session may have been terminated. Try starting a new thread.`
                     );
+                    await this._removeReaction(channelId, messageTs, 'eyes');
                     throw sendError;
                 }
             }
@@ -354,67 +390,103 @@ class SlackWebhookHandler {
 
     async _handleClaudeResponse(channelId, threadTs, responseData) {
         try {
-            this.logger.info(`Handling Claude response for channel ${channelId}, thread ${threadTs}`);
+            this.logger.info(`Handling Claude response for channel ${channelId}, thread ${threadTs}, type: ${responseData.type}`);
+            const threadKey = `${channelId}:${threadTs}`;
+            const threadData = this.threadMessages.get(threadKey);
+
+            // === STOP HOOK PATTERN (like Telegram) ===
+            // "waitingForInput" after "starting" = Claude is ready to receive input → transition to "working"
+            // "waitingForInput" after "working" = Claude finished task and showing prompt → transition to "completed"
+            // "taskCompleted" (from Stop hook) = Explicit completion signal → transition to "completed"
+
+            if (responseData.type === 'waitingForInput') {
+                if (!threadData) {
+                    this.logger.warn(`No thread data found for waitingForInput event`);
+                    return;
+                }
+
+                // ONLY use waitingForInput for starting → working transition
+                // Do NOT use it for completion (timing issues with tmux buffer flush)
+                if (threadData.state === 'starting') {
+                    this.logger.info(`🔄 Claude session ready - transitioning from starting to working`);
+                    await this._updateThreadState(channelId, threadTs, 'working', {
+                        sessionName: responseData.sessionName,
+                        prompt: threadData.prompt // Keep original prompt
+                    });
+                    this.logger.info(`✅ Transitioned to working state for thread ${threadTs}`);
+                    return;
+                }
+
+                // For completion, we rely ONLY on taskCompleted (Stop hook)
+                // Ignore waitingForInput when in working state - tmux buffer not ready yet
+                this.logger.info(`⏭️ Ignoring waitingForInput in ${threadData.state} state - waiting for Stop hook`);
+                return;
+            }
 
             if (responseData.type === 'taskCompleted') {
-                // Format and send the response
-                const responseMessage = this._formatClaudeResponse(responseData);
-                await this._sendMessage(channelId, responseMessage, threadTs);
+                // === STATE 3: COMPLETED ===
+                // Stop hook fired with "completed" - capture response and update
+                this.logger.info(`✅ Task completed via Stop hook - capturing response`);
 
-                this.logger.info(`Sent Claude response to Slack thread ${threadTs}`);
-            } else if (responseData.type === 'waitingForInput') {
-                // Claude is waiting for input
-                await this._sendMessage(
-                    channelId,
-                    `:hourglass_flowing_sand: *Claude is waiting for input*\n\n` +
-                    `${responseData.claudeResponse}`,
-                    threadTs
-                );
+                await this._updateThreadState(channelId, threadTs, 'completed', {
+                    claudeResponse: responseData.claudeResponse,
+                    userQuestion: responseData.userQuestion,
+                    sessionName: responseData.sessionName
+                });
+
+                this.logger.info(`✅ Task completed for thread ${threadTs}`);
             }
         } catch (error) {
             this.logger.error('Failed to handle Claude response:', error.message);
-            await this._sendMessage(
-                channelId,
-                `:x: *Failed to send Claude response:* ${error.message}`,
-                threadTs
-            );
+            // Try to send error as a new message if state update fails
+            try {
+                await this._sendMessage(
+                    channelId,
+                    `:x: *Failed to process Claude response:* ${error.message}`,
+                    threadTs
+                );
+            } catch (sendError) {
+                this.logger.error('Failed to send error message:', sendError.message);
+            }
         }
     }
 
     _formatClaudeResponse(responseData) {
-        const { claudeResponse, userQuestion, sessionName } = responseData;
+        const { claudeResponse, userQuestion, sessionName, type } = responseData;
 
-        // Build the response message
-        let message = `:robot_face: *Claude Response*\n\n`;
+        // Debug logging
+        this.logger.info(`📝 Formatting response: question=${userQuestion?.length || 0} chars, response=${claudeResponse?.length || 0} chars, type=${type}`);
+        this.logger.info(`📄 Response content preview: ${claudeResponse?.substring(0, 150)}`);
 
-        // Add user question if available
-        if (userQuestion) {
-            message += `📝 *Your Question:*\n${userQuestion.substring(0, 200)}`;
-            if (userQuestion.length > 200) {
-                message += '...';
+        // Build the response message with green tick when completed
+        const emoji = type === 'taskCompleted' ? ':white_check_mark:' : ':robot_face:';
+        const statusText = type === 'taskCompleted' ? 'Task Completed' : 'Claude Response';
+        let message = `${emoji} *${statusText}*\n\n`;
+
+        // Add user question in block format if available
+        if (userQuestion && userQuestion !== 'No user input') {
+            const { preview: questionPreview, truncated: questionTruncated } =
+                ResponseFormatter.getQuestionPreview(userQuestion, 300);
+
+            message += `📝 *Your Question:*\n`;
+            message += ResponseFormatter.formatResponseForSlack(questionPreview, true);
+
+            if (questionTruncated) {
+                message += '\n> _...(truncated)_';
             }
             message += '\n\n';
         }
 
-        // Add the response with code block formatting (like telegram)
-        if (claudeResponse && claudeResponse.length > 0) {
-            const fullResponse = claudeResponse;
-            const words = fullResponse.split(/\s+/);
+        // Add the response preview
+        if (claudeResponse && claudeResponse.length > 0 && claudeResponse !== 'No Claude response') {
+            const { preview, truncated, totalWords } =
+                ResponseFormatter.getResponsePreview(claudeResponse, 100);
 
-            let preview;
-            if (words.length > 100) {
-                // Get last 100 words
-                preview = words.slice(-100).join(' ');
-            } else {
-                preview = fullResponse;
-            }
+            message += `🤖 *Claude Response Preview:*\n`;
+            message += ResponseFormatter.formatResponseForSlack(preview, true);
 
-            // Format as code block (using Slack's ``` formatting)
-            message += `🤖 *Claude Response Preview (last 100 words):*\n`;
-            message += `\`\`\`\n${preview}\n\`\`\``;
-
-            if (words.length > 100) {
-                message += `\n_(...showing last 100 of ${words.length} words, full response in tmux session)_`;
+            if (truncated) {
+                message += `\n\n_💡 ${ResponseFormatter.getTruncationMessage(100, totalWords, 'tmux session')}_`;
             }
         } else {
             message += '_No response captured_';
@@ -648,9 +720,11 @@ class SlackWebhookHandler {
             // Skip if no text
             if (!msg.text) continue;
 
-            // Determine sender
+            // Determine if this is a bot message
             const isBot = msg.user === botUserId || msg.bot_id;
-            const sender = isBot ? 'Assistant' : 'User';
+
+            // SKIP BOT MESSAGES - only include user messages in context
+            if (isBot) continue;
 
             // Clean up the message text (remove bot mentions, format links, etc.)
             let text = msg.text;
@@ -665,7 +739,7 @@ class SlackWebhookHandler {
             // Format user mentions
             text = text.replace(/<@([A-Z0-9]+)>/g, '@user_$1');
 
-            formattedMessages.push(`${sender}: ${text}`);
+            formattedMessages.push(`User: ${text}`);
         }
 
         // Join messages with newlines
@@ -804,9 +878,57 @@ class SlackWebhookHandler {
 
             if (!response.data.ok) {
                 this.logger.error('Failed to send message:', response.data.error);
+                return null;
             }
+
+            const messageTs = response.data.ts;
+            this.logger.debug(`📤 Sent message ${messageTs} to channel ${channelId}`);
+
+            // Return the message timestamp for future updates
+            return messageTs;
         } catch (error) {
             this.logger.error('Failed to send message:', error.response?.data || error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Update/edit an existing message
+     * @param {string} channelId - Channel ID
+     * @param {string} messageTs - Message timestamp to update
+     * @param {string} text - New message text
+     * @returns {Promise<boolean>} - Success status
+     */
+    async _updateMessage(channelId, messageTs, text) {
+        try {
+            const payload = {
+                channel: channelId,
+                ts: messageTs,
+                text: text,
+                mrkdwn: true
+            };
+
+            const response = await axios.post(
+                `${this.apiBaseUrl}/chat.update`,
+                payload,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${this.config.botToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if (!response.data.ok) {
+                this.logger.error('Failed to update message:', response.data.error);
+                return false;
+            }
+
+            this.logger.info(`✓ Updated message ${messageTs} in channel ${channelId}`);
+            return true;
+        } catch (error) {
+            this.logger.error('Failed to update message:', error.response?.data || error.message);
+            return false;
         }
     }
 
@@ -815,6 +937,7 @@ class SlackWebhookHandler {
      * @param {string} channelId - Channel ID
      * @param {string} messageTs - Message timestamp
      * @param {string} emoji - Emoji name (without colons, e.g., 'thumbsup', 'eyes', 'white_check_mark')
+     * @returns {Promise<boolean>} - Success status
      */
     async _addReaction(channelId, messageTs, emoji) {
         try {
@@ -833,12 +956,20 @@ class SlackWebhookHandler {
                 }
             );
 
-            if (!response.data.ok && response.data.error !== 'already_reacted') {
+            if (response.data.ok) {
+                this.logger.debug(`✓ Added reaction ${emoji} to message ${messageTs}`);
+                return true;
+            } else if (response.data.error === 'already_reacted') {
+                this.logger.debug(`Reaction ${emoji} already exists on message ${messageTs}`);
+                return true; // Not an error
+            } else {
                 this.logger.warn(`Failed to add reaction ${emoji}:`, response.data.error);
+                return false;
             }
         } catch (error) {
             // Don't fail the main flow if reactions fail
             this.logger.debug('Failed to add reaction:', error.response?.data?.error || error.message);
+            return false;
         }
     }
 
@@ -847,6 +978,7 @@ class SlackWebhookHandler {
      * @param {string} channelId - Channel ID
      * @param {string} messageTs - Message timestamp
      * @param {string} emoji - Emoji name (without colons)
+     * @returns {Promise<boolean>} - Success status
      */
     async _removeReaction(channelId, messageTs, emoji) {
         try {
@@ -865,13 +997,108 @@ class SlackWebhookHandler {
                 }
             );
 
-            if (!response.data.ok && response.data.error !== 'no_reaction') {
+            if (response.data.ok) {
+                this.logger.debug(`✓ Removed reaction ${emoji} from message ${messageTs}`);
+                return true;
+            } else if (response.data.error === 'no_reaction') {
+                this.logger.debug(`Reaction ${emoji} not found on message ${messageTs}`);
+                return true; // Not an error
+            } else {
                 this.logger.warn(`Failed to remove reaction ${emoji}:`, response.data.error);
+                return false;
             }
         } catch (error) {
             // Don't fail the main flow if reactions fail
             this.logger.debug('Failed to remove reaction:', error.response?.data?.error || error.message);
+            return false;
         }
+    }
+
+    /**
+     * Update message state and reactions
+     * Manages the full lifecycle: starting -> working -> completed
+     * @param {string} channelId - Channel ID
+     * @param {string} threadTs - Thread timestamp
+     * @param {string} newState - New state ('starting'|'working'|'completed')
+     * @param {Object} additionalData - Additional data for the message
+     */
+    async _updateThreadState(channelId, threadTs, newState, additionalData = {}) {
+        const threadKey = `${channelId}:${threadTs}`;
+        const threadData = this.threadMessages.get(threadKey);
+
+        if (!threadData) {
+            this.logger.warn(`No thread data found for ${threadKey}`);
+            return false;
+        }
+
+        const { userMessageTs, botMessageTs } = threadData;
+        let messageText = '';
+        let emoji = '';
+        let removeEmoji = '';
+
+        // Define state transitions
+        switch (newState) {
+            case 'starting':
+                messageText = `:hourglass_flowing_sand: *Starting new Claude session*\n\n` +
+                    `:computer: *Session:* \`${additionalData.sessionName || 'N/A'}\`\n` +
+                    `:memo: *Your Request:* ${additionalData.prompt || 'N/A'}\n\n` +
+                    `Setting up your Claude session...`;
+                emoji = 'eyes';
+                break;
+
+            case 'working':
+                messageText = `:hourglass_flowing_sand: *Working on your request*\n\n` +
+                    `:computer: *Session:* \`${additionalData.sessionName || 'N/A'}\`\n` +
+                    `:memo: *Your Request:* ${additionalData.prompt || 'N/A'}\n\n` +
+                    `Claude is processing your request...`;
+                removeEmoji = 'eyes';
+                emoji = 'hourglass_flowing_sand';
+                break;
+
+            case 'completed':
+                messageText = this._formatClaudeResponse({
+                    ...additionalData,
+                    type: 'taskCompleted'
+                });
+                removeEmoji = 'hourglass_flowing_sand';
+                emoji = 'white_check_mark';
+                break;
+
+            default:
+                this.logger.warn(`Unknown state: ${newState}`);
+                return false;
+        }
+
+        this.logger.info(`🔄 Updating thread ${threadKey} state: ${threadData.state} -> ${newState}`);
+
+        // Step 1: Update bot message
+        if (botMessageTs) {
+            const updated = await this._updateMessage(channelId, botMessageTs, messageText);
+            if (!updated) {
+                this.logger.warn(`Failed to update bot message ${botMessageTs}`);
+                return false;
+            }
+        }
+
+        // Step 2: Update reactions on user message
+        if (userMessageTs) {
+            // Remove old reaction if specified
+            if (removeEmoji) {
+                await this._removeReaction(channelId, userMessageTs, removeEmoji);
+            }
+            // Add new reaction
+            if (emoji) {
+                await this._addReaction(channelId, userMessageTs, emoji);
+            }
+        }
+
+        // Step 3: Update thread state
+        threadData.state = newState;
+        threadData.timestamp = Date.now();
+        this.threadMessages.set(threadKey, threadData);
+
+        this.logger.info(`✅ Thread ${threadKey} updated to state: ${newState}`);
+        return true;
     }
 
     start(port = 3000) {

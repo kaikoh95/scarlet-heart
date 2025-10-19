@@ -96,16 +96,16 @@ class TelegramWebhookHandler {
             return;
         }
 
-        // Parse command
-        const commandMatch = messageText.match(/^\/cmd\s+([A-Z0-9]{8})\s+(.+)$/i);
+        // Parse command (support multiline with [\s\S] which matches any character including newlines)
+        const commandMatch = messageText.match(/^\/cmd\s+([A-Z0-9]{8})\s+([\s\S]+)$/i);
         if (!commandMatch) {
             // Check if it's a direct command without /cmd prefix
-            const directMatch = messageText.match(/^([A-Z0-9]{8})\s+(.+)$/);
+            const directMatch = messageText.match(/^([A-Z0-9]{8})\s+([\s\S]+)$/);
             if (directMatch) {
                 await this._processCommand(chatId, directMatch[1], directMatch[2]);
             } else {
-                await this._sendMessage(chatId, 
-                    '❌ Invalid format. Use:\n`/cmd <TOKEN> <command>`\n\nExample:\n`/cmd ABC12345 analyze this code`',
+                await this._sendMessage(chatId,
+                    '❌ Invalid format. Use:\n`/cmd <TOKEN> <command>`\n\nExample:\n`/cmd ABC12345 analyze this code`\n\nMultiline commands are supported!',
                     { parse_mode: 'Markdown' });
             }
             return;

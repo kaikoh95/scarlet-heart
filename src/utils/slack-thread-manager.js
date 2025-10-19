@@ -319,39 +319,28 @@ class SlackThreadManager {
         const startTime = Date.now();
         const pollInterval = 500; // Poll every 500ms
 
-        // Enhanced patterns that indicate Claude is ready for input
-        const readyPatterns = [
-            /\? for shortcuts/i,          // Claude Code waiting indicator
-            /What would you like/i,       // Claude prompt text
-            /How can I help/i,            // Claude prompt text
-            /Is there anything else/i,    // Claude completion question
-            />\s*$/m,                      // Prompt character at end of line
-            /╭.*─.*╮/,                     // Command box top border
-            /│\s*>\s*│/,                   // Command box with prompt
-            /Ready to assist/i,            // Claude ready message
-            /press \? for shortcuts/i      // Full shortcuts message
-        ];
+        // Simple and reliable pattern: look for the horizontal line separator followed by prompt
+        // This is what Telegram/TmuxMonitor uses: ────────────────────
+        const readyPattern = /────────────────────/;
 
         this.logger.info(`⏳ Waiting for Claude to be ready in session ${sessionName}...`);
 
         while (Date.now() - startTime < maxWaitMs) {
             const content = this._getTmuxContent(sessionName);
 
-            // Log last few lines for debugging
-            const lines = content.split('\n').filter(l => l.trim());
-            if (lines.length > 0) {
-                const lastLines = lines.slice(-3).join(' | ');
-                this.logger.debug(`Last 3 lines: "${lastLines.substring(0, 100)}..."`);
-            }
-
-            // Check if any ready pattern matches
-            const isReady = readyPatterns.some(pattern => pattern.test(content));
-
-            if (isReady) {
-                this.logger.info(`✓ Claude is ready in session ${sessionName}`);
+            // Check if we see the command prompt box (horizontal line separator)
+            if (readyPattern.test(content)) {
+                this.logger.info(`✓ Claude is ready in session ${sessionName} (detected prompt box)`);
                 // Wait a bit more to ensure stability
                 await this._sleep(500);
                 return true;
+            }
+
+            // Log progress every 5 seconds
+            const elapsed = Date.now() - startTime;
+            if (elapsed % 5000 < pollInterval) {
+                const lastLines = content.split('\n').slice(-2).join(' | ');
+                this.logger.debug(`  Still waiting (${Math.round(elapsed/1000)}s): ${lastLines.substring(0, 100)}`);
             }
 
             // Wait before next poll
@@ -359,7 +348,9 @@ class SlackThreadManager {
         }
 
         this.logger.warn(`⚠️ Timeout waiting for Claude to be ready in session ${sessionName} (${maxWaitMs}ms)`);
-        this.logger.warn(`Last content: ${this._getTmuxContent(sessionName).slice(-200)}`);
+        const lastContent = this._getTmuxContent(sessionName);
+        const lastLines = lastContent.split('\n').slice(-5).join('\n');
+        this.logger.warn(`Last output:\n${lastLines}`);
         return false;
     }
 
@@ -458,9 +449,10 @@ class SlackThreadManager {
     setResponseCallback(sessionName, callback, options = {}) {
         this.responseCallbacks.set(sessionName, {
             callback,
-            isNewSession: options.isNewSession || false
+            isNewSession: options.isNewSession || false,
+            state: 'starting' // Initialize state for tracking transitions
         });
-        this.logger.info(`Response callback set for session ${sessionName}, isNewSession: ${options.isNewSession}`);
+        this.logger.info(`Response callback set for session ${sessionName}, isNewSession: ${options.isNewSession}, state: starting`);
     }
 
     /**
@@ -550,7 +542,7 @@ class SlackThreadManager {
     /**
      * Handle waiting for input event from monitor
      */
-    _handleWaitingForInput(sessionName, data) {
+    async _handleWaitingForInput(sessionName, data) {
         this.logger.info(`⏳ Claude waiting for input detected in session ${sessionName}`);
 
         // Get the response callback for this session
@@ -560,41 +552,85 @@ class SlackThreadManager {
             return;
         }
 
-        // Check if we're still in the startup grace period (10 seconds from monitoring start)
-        const GRACE_PERIOD_MS = 10000; // 10 seconds
-        const monitoringStartTime = this.monitoringStartTimes.get(sessionName);
+        // Check current state to determine action
+        const state = callbackData.state || 'unknown';
 
-        if (callbackData.isNewSession && monitoringStartTime) {
-            const timeSinceMonitoringStart = Date.now() - monitoringStartTime;
-            const gracePeriodRemaining = GRACE_PERIOD_MS - timeSinceMonitoringStart;
-
-            if (gracePeriodRemaining > 0) {
-                this.logger.info(`⏭️ Ignoring 'waiting for input' event during startup grace period (${Math.round(gracePeriodRemaining / 1000)}s remaining)`);
-                return;
-            } else {
-                this.logger.info(`✅ Grace period expired (${Math.round(timeSinceMonitoringStart / 1000)}s since monitoring started)`);
-            }
-        }
-
-        // Extract the conversation
-        const monitor = this.monitors.get(sessionName);
-        if (!monitor) {
-            this.logger.debug(`No monitor found for session ${sessionName}`);
+        if (state === 'starting') {
+            // Transition from starting → working
+            this.logger.info(`📤 Sending 'waiting for input' for starting → working transition`);
+            callbackData.callback({
+                type: 'waitingForInput',
+                sessionName: sessionName,
+                userQuestion: '',
+                claudeResponse: '',
+                timestamp: data.timestamp
+            });
+            // Update state
+            callbackData.state = 'working';
             return;
         }
 
-        const conversation = monitor.getRecentConversation(sessionName, 3000);
+        if (state === 'working') {
+            // Claude finished - wait for buffer to stabilize, then extract
+            this.logger.info(`⏸️  Detected completion - waiting for tmux buffer to stabilize...`);
 
-        this.logger.info(`📤 Sending 'waiting for input' notification to Slack for session ${sessionName}`);
+            // Poll tmux buffer until content stops changing
+            await this._waitForBufferStabilization(sessionName, 10000); // 10s max wait
 
-        // Call the callback with the response data
-        callbackData.callback({
-            type: 'waitingForInput',
-            sessionName: sessionName,
-            userQuestion: conversation.userQuestion || 'No user input',
-            claudeResponse: conversation.claudeResponse || 'Waiting for input',
-            timestamp: data.timestamp
-        });
+            // Extract conversation with fresh monitor
+            const TmuxMonitor = require('./tmux-monitor');
+            const freshMonitor = new TmuxMonitor();
+            const conversation = freshMonitor.getRecentConversation(sessionName, 5000);
+
+            this.logger.info(`📊 Extracted after stabilization: question=${conversation.userQuestion?.length || 0} chars, response=${conversation.claudeResponse?.length || 0} chars`);
+
+            // Send taskCompleted event
+            callbackData.callback({
+                type: 'taskCompleted',
+                sessionName: sessionName,
+                userQuestion: conversation.userQuestion || 'No user input',
+                claudeResponse: conversation.claudeResponse || 'No response captured',
+                timestamp: data.timestamp
+            });
+            callbackData.state = 'completed';
+        }
+    }
+
+    /**
+     * Wait for tmux buffer content to stabilize (stop changing)
+     * Returns when content hasn't changed for 2 consecutive checks
+     */
+    async _waitForBufferStabilization(sessionName, maxWaitMs = 10000) {
+        const startTime = Date.now();
+        const checkInterval = 1000; // Check every 1 second
+        let lastContent = '';
+        let stableCount = 0;
+        const requiredStableChecks = 2; // Need 2 stable checks
+
+        this.logger.info(`⏳ Waiting for buffer to stabilize (max ${maxWaitMs}ms)...`);
+
+        while (Date.now() - startTime < maxWaitMs) {
+            const content = this._getTmuxContent(sessionName);
+
+            if (content === lastContent) {
+                stableCount++;
+                this.logger.debug(`  Buffer stable (${stableCount}/${requiredStableChecks})`);
+
+                if (stableCount >= requiredStableChecks) {
+                    this.logger.info(`✓ Buffer stabilized after ${Date.now() - startTime}ms`);
+                    return true;
+                }
+            } else {
+                stableCount = 0;
+                this.logger.debug(`  Buffer still changing (${content.length} chars)`);
+            }
+
+            lastContent = content;
+            await this._sleep(checkInterval);
+        }
+
+        this.logger.warn(`⚠️ Buffer did not stabilize within ${maxWaitMs}ms, proceeding anyway`);
+        return false;
     }
 
     /**
