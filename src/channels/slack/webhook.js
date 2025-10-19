@@ -227,11 +227,6 @@ class SlackWebhookHandler extends BaseWebhookHandler {
                 // Add eyes reaction to user message
                 await this._addReaction(channelId, messageTs, 'eyes');
 
-                // Set up response callback
-                this.threadManager.setResponseCallback(session.sessionName, async (responseData) => {
-                    await this._handleClaudeResponse(channelId, threadTs, responseData);
-                }, { isNewSession: true });
-
                 // Get thread conversation history
                 let threadContext = '';
                 try {
@@ -305,12 +300,6 @@ class SlackWebhookHandler extends BaseWebhookHandler {
                 // Add eyes reaction
                 await this._addReaction(channelId, messageTs, 'eyes');
 
-                // Ensure monitoring and callbacks
-                this.threadManager.ensureMonitoring(session.sessionName);
-                this.threadManager.setResponseCallback(session.sessionName, async (responseData) => {
-                    await this._handleClaudeResponse(channelId, threadTs, responseData);
-                }, { isNewSession: false });
-
                 // Get new user messages
                 let newMessagesContext = '';
                 try {
@@ -375,68 +364,6 @@ class SlackWebhookHandler extends BaseWebhookHandler {
         }
     }
 
-    async _handleClaudeResponse(channelId, threadTs, responseData) {
-        try {
-            this.logger.info(`Handling Claude response for channel ${channelId}, thread ${threadTs}, type: ${responseData.type}`);
-            const threadKey = `${channelId}:${threadTs}`;
-            const threadData = this.threadMessages.get(threadKey);
-
-            // === STOP HOOK PATTERN (like Telegram) ===
-            // "waitingForInput" after "starting" = Claude is ready to receive input → transition to "working"
-            // "waitingForInput" after "working" = Claude finished task and showing prompt → transition to "completed"
-            // "taskCompleted" (from Stop hook) = Explicit completion signal → transition to "completed"
-
-            if (responseData.type === 'waitingForInput') {
-                if (!threadData) {
-                    this.logger.warn(`No thread data found for waitingForInput event`);
-                    return;
-                }
-
-                // ONLY use waitingForInput for starting → working transition
-                // Do NOT use it for completion (timing issues with tmux buffer flush)
-                if (threadData.state === 'starting') {
-                    this.logger.info(`🔄 Claude session ready - transitioning from starting to working`);
-                    await this._updateThreadState(channelId, threadTs, 'working', {
-                        sessionName: responseData.sessionName,
-                        prompt: threadData.prompt // Keep original prompt
-                    });
-                    this.logger.info(`✅ Transitioned to working state for thread ${threadTs}`);
-                    return;
-                }
-
-                // For completion, we rely ONLY on taskCompleted (Stop hook)
-                // Ignore waitingForInput when in working state - tmux buffer not ready yet
-                this.logger.info(`⏭️ Ignoring waitingForInput in ${threadData.state} state - waiting for Stop hook`);
-                return;
-            }
-
-            if (responseData.type === 'taskCompleted') {
-                // === STATE 3: COMPLETED ===
-                // Stop hook fired with "completed" - capture response and update
-                this.logger.info(`✅ Task completed via Stop hook - capturing response`);
-
-                await this._updateThreadState(channelId, threadTs, 'completed', {
-                    claudeResponse: responseData.claudeResponse,
-                    userQuestion: responseData.userQuestion,
-                    sessionName: responseData.sessionName
-                });
-
-                this.logger.info(`✅ Task completed for thread ${threadTs}`);
-            }
-        } catch (error) {
-            this.logger.error('Failed to handle Claude response:', error.message);
-            // Try to send error as a new message if state update fails
-            try {
-                await this._sendMessage(
-                    channelId,
-                    `:x: *Failed to process Claude response:* ${error.message}`,
-                    threadTs
-                );
-            } catch (sendError) {
-                this.logger.error('Failed to send error message:', sendError.message);
-            }
-        }
-    }
 
     _formatClaudeResponse(responseData) {
         const { claudeResponse, userQuestion, sessionName, type } = responseData;
