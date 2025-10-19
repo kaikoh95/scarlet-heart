@@ -4,7 +4,8 @@ Control [Claude Code](https://claude.ai/code) remotely via multiple messaging pl
 
 **Supported Platforms:**
 - 📧 **Email** - Traditional SMTP/IMAP integration with execution trace
-- 📱 **Telegram** - Interactive bot with smart buttons ✅ **NEW**
+- 📱 **Telegram** - Interactive bot with smart buttons
+- 💼 **Slack** - Workspace integration with app mentions ✅ **NEW**
 - 💬 **LINE** - Rich messaging with token-based commands
 - 🖥️ **Desktop** - Sound alerts and system notifications
 
@@ -60,8 +61,8 @@ Control [Claude Code](https://claude.ai/code) remotely via multiple messaging pl
 
 ### Notification Channels
 - ~~**📱 Telegram Integration**~~ ✅ **COMPLETED** - Bot integration with interactive buttons and real-time commands
+- ~~**💼 Slack Integration**~~ ✅ **COMPLETED** - Workspace integration with app mentions and command support
 - **💬 Discord Integration** - Bot integration for messaging platforms
-- **⚡ Slack Workflow** - Native Slack app with slash commands
 
 ### Developer Tools
 - **🤖 AI Tools Support** - Integration with Gemini CLI, Cursor, and other AI development tools
@@ -157,7 +158,77 @@ TELEGRAM_FORCE_IPV4=true
 - **Default behavior**: Uses system default (usually IPv6 when available, fallback to IPv4)
 - **Performance impact**: Minimal - only affects initial connection establishment
 
-#### Option C: Configure LINE
+#### Option C: Configure Slack ✅ **NEW**
+
+**Quick Setup:**
+```bash
+chmod +x setup-slack.sh
+./setup-slack.sh
+```
+
+**Manual Setup:**
+1. Create Slack App at [api.slack.com/apps](https://api.slack.com/apps)
+2. Add Bot Token Scopes:
+   - `app_mentions:read` (receive mentions)
+   - `chat:write` (send messages)
+   - `channels:history` (read thread conversations in public channels)
+   - `groups:history` (read thread conversations in private channels)
+3. Install app to workspace and get Bot User OAuth Token
+4. Configure Event Subscriptions with your webhook URL
+5. Subscribe to `app_mention` bot event
+
+**Required Slack settings:**
+```env
+SLACK_ENABLED=true
+SLACK_BOT_TOKEN=xoxb-your-bot-token
+SLACK_SIGNING_SECRET=your-signing-secret
+SESSION_MAP_PATH=/your/path/to/Claude-Code-Remote/src/data/session-map.json
+```
+
+**Optional Slack settings:**
+```env
+# Default channel for notifications (optional - see Channel Behavior below)
+SLACK_CHANNEL_ID=C1234567890
+
+# Whitelist specific channels or users (comma-separated)
+# If not set, bot responds to mentions in any channel
+SLACK_WHITELIST=C1234567890,U0987654321
+
+# Custom webhook port (default: 3002, or use unified server on 3001)
+SLACK_WEBHOOK_PORT=3002
+```
+
+**Smart Channel Notifications:**
+The bot intelligently determines where to send notifications:
+
+1. **Session Memory** (Recommended): When you send a command, the bot remembers which channel you used and sends future notifications there
+   - No SLACK_CHANNEL_ID needed!
+   - Just mention the bot in any channel: `@bot /cmd TOKEN123 your command`
+   - Future notifications for that task go to the same channel
+
+2. **Default Channel**: Set SLACK_CHANNEL_ID for a fallback notification channel
+   - Useful for first-time notifications before any command is sent
+   - Acts as the default if no session channel is saved
+
+3. **Whitelist Control**: Use SLACK_WHITELIST to restrict which channels/users can interact
+   - If not set, bot works in any channel it's added to
+
+**How it works:**
+```
+1. Claude completes a task → Creates session with token ABC123
+2. You mention bot anywhere: @bot /cmd ABC123 analyze this
+3. Bot saves that channel to the session
+4. Next notification for ABC123 → Goes to that same channel
+```
+
+No configuration needed - just start using the bot in any channel! 🎉
+
+**Thread Support:**
+- When you mention the bot in a Slack thread, it automatically captures the entire thread conversation
+- The thread context is passed to Claude along with your command
+- Perfect for continuing discussions or asking follow-up questions with full context
+
+#### Option D: Configure LINE
 
 **Required LINE settings:**
 ```env
@@ -225,15 +296,47 @@ claude-code --config /path/to/your/claude/settings.json
 
 ### 6. Start Services
 
-#### For All Platforms (Recommended)
+#### Option A: Unified Webhook Server (Recommended) ⭐
+
+All webhook platforms on a **single port** - perfect for easier ngrok setup!
+
 ```bash
-# Automatically starts all enabled platforms
+# Start unified server (handles Telegram, Slack, LINE on one port)
+npm run webhooks:unified
+# or
+node start-unified-webhook.js
+
+# Then expose with ngrok (single tunnel for all platforms!)
+ngrok http 3001
+```
+
+**Benefits:**
+- ✅ Single port for all webhook platforms
+- ✅ One ngrok tunnel handles everything
+- ✅ Simpler deployment and configuration
+- ✅ All platforms share the same public URL with different paths:
+  - `https://your-domain.com/webhook/telegram`
+  - `https://your-domain.com/webhook/slack`
+  - `https://your-domain.com/webhook/line`
+
+**Configuration:**
+```env
+# Set in .env (optional, defaults to 3001)
+UNIFIED_WEBHOOK_PORT=3001
+```
+
+#### Option B: Multiple Webhook Servers
+
+Run each platform on separate ports for more control:
+
+```bash
+# Automatically starts all enabled platforms (separate processes)
 npm run webhooks
 # or
 node start-all-webhooks.js
 ```
 
-#### For Individual Platforms
+**Individual Services:**
 
 **For Email:**
 ```bash
@@ -244,17 +347,26 @@ node claude-remote.js daemon start
 
 **For Telegram:**
 ```bash
-npm run telegram
+npm run telegram  # Port 3001
 # or
 node start-telegram-webhook.js
 ```
 
+**For Slack:**
+```bash
+npm run slack  # Port 3002
+# or
+node start-slack-webhook.js
+```
+
 **For LINE:**
 ```bash
-npm run line
+npm run line  # Port 3000
 # or
 node start-line-webhook.js
 ```
+
+> **Note:** With separate servers, you'll need multiple ngrok tunnels or a reverse proxy.
 
 ### 7. Test Your Setup
 
@@ -278,6 +390,7 @@ node claude-hook-notify.js completed
    - 🔊 **Sound alert** (Desktop)
    - 📧 **Email notification with execution trace** (if enabled)
    - 📱 **Telegram message with buttons** (if enabled)
+   - 💼 **Slack message with rich formatting** (if enabled)
    - 💬 **LINE message** (if enabled)
 3. **Reply with commands** using any platform
 4. **Commands execute automatically** in Claude
@@ -290,11 +403,19 @@ Simply reply to notification email with your command
 No special formatting required
 ```
 
-**Telegram:** ✅ **NEW**
+**Telegram:**
 ```
 Click smart button to get format:
 📝 Personal Chat: /cmd TOKEN123 your command here
 👥 Group Chat: @bot_name /cmd TOKEN123 your command here
+```
+
+**Slack:** ✅ **NEW**
+```
+Mention the bot in any channel:
+@bot_name /cmd TOKEN123 your command here
+or
+@bot_name TOKEN123 your command here
 ```
 
 **LINE:**
@@ -372,16 +493,21 @@ node claude-remote.js test
 
 ### Service Management
 ```bash
-# Start all enabled platforms
+# Recommended: Start unified webhook server (all platforms on one port)
+npm run webhooks:unified
+
+# Alternative: Start all platforms separately
 npm run webhooks
 
 # Individual services
-npm run telegram         # Telegram webhook
-npm run line            # LINE webhook  
+npm run telegram         # Telegram webhook (port 3001)
+npm run slack           # Slack webhook (port 3002)
+npm run line            # LINE webhook (port 3000)
 npm run daemon:start    # Email daemon
 
 # Stop services
 npm run daemon:stop     # Stop email daemon
+# Note: Use Ctrl+C to stop webhook servers
 ```
 
 ## 🔍 Troubleshooting
@@ -440,6 +566,7 @@ DEBUG=true node claude-hook-notify.js completed
 ### Multi-Platform Authentication
 - ✅ **Email**: Sender whitelist via `ALLOWED_SENDERS` environment variable
 - ✅ **Telegram**: Bot token and chat ID verification
+- ✅ **Slack**: Bot token, signing secret, and channel/user whitelist
 - ✅ **LINE**: Channel secret and access token validation
 - ✅ **Session Tokens**: 8-character alphanumeric tokens for command verification
 

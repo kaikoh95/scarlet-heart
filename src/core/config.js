@@ -103,6 +103,15 @@ class ConfigManager {
                     groupId: process.env.TELEGRAM_GROUP_ID || '',
                     forceIPv4: process.env.TELEGRAM_FORCE_IPV4 === 'true'
                 }
+            },
+            slack: {
+                type: 'chat',
+                enabled: process.env.SLACK_ENABLED === 'true',
+                config: {
+                    botToken: process.env.SLACK_BOT_TOKEN || '',
+                    channelId: process.env.SLACK_CHANNEL_ID || '',
+                    signingSecret: process.env.SLACK_SIGNING_SECRET || ''
+                }
             }
         };
     }

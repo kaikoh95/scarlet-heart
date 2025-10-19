@@ -11,8 +11,10 @@
     "relay:pty": "node start-relay-pty.js",
     "relay:start": "INJECTION_MODE=pty node src/relay/relay-pty.js",
     "telegram": "node start-telegram-webhook.js",
+    "slack": "node start-slack-webhook.js",
     "line": "node start-line-webhook.js",
-    "webhooks": "node start-all-webhooks.js"
+    "webhooks": "node start-all-webhooks.js",
+    "webhooks:unified": "node start-unified-webhook.js"
   },
   "keywords": [
     "claude-code",
