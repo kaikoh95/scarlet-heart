@@ -84,10 +84,35 @@ async function sendSlackThreadNotification(sessionName, notificationType, projec
         });
 
         // Update message based on notification type
+        if (notificationType === 'init') {
+            // === INIT STATE ===
+            const initMessage =
+                `:eyes: *Claude Initialising*\n\n` +
+                `:file_folder: *Project:* ${projectName}\n` +
+                `:computer: *Session:* \`${sessionName}\`\n` +
+                `:memo: *Request:* ${conversation.userQuestion?.substring(0, 200) || 'Waiting for task...'}\n\n` +
+                `Setting up Claude session...`;
+
+            await slackChannel.updateMessage(
+                threadInfo.channelId,
+                messageInfo.botMessageTs,
+                initMessage
+            );
+
+            // Ensure only eyes emoji (remove others, add eyes)
+            // The webhook already adds eyes, but we ensure clean state
+            await slackChannel.removeReaction(threadInfo.channelId, messageInfo.userMessageTs, 'hourglass_flowing_sand');
+            await slackChannel.removeReaction(threadInfo.channelId, messageInfo.userMessageTs, 'white_check_mark');
+            await slackChannel.addReaction(threadInfo.channelId, messageInfo.userMessageTs, 'eyes');
+
+            console.log(`✅ Updated to "init" state`);
+        }
+
         if (notificationType === 'working') {
             // === WORKING STATE ===
             const workingMessage =
                 `:hourglass_flowing_sand: *Claude is working*\n\n` +
+                `:file_folder: *Project:* ${projectName}\n` +
                 `:computer: *Session:* \`${sessionName}\`\n` +
                 `:memo: *Request:* ${conversation.userQuestion?.substring(0, 200) || 'Processing...'}\n\n` +
                 `Processing your request...`;
@@ -98,8 +123,9 @@ async function sendSlackThreadNotification(sessionName, notificationType, projec
                 workingMessage
             );
 
-            // Update reactions: eyes → hourglass
+            // Ensure only hourglass emoji (remove all others first)
             await slackChannel.removeReaction(threadInfo.channelId, messageInfo.userMessageTs, 'eyes');
+            await slackChannel.removeReaction(threadInfo.channelId, messageInfo.userMessageTs, 'white_check_mark');
             await slackChannel.addReaction(threadInfo.channelId, messageInfo.userMessageTs, 'hourglass_flowing_sand');
 
             console.log(`✅ Updated to "working" state`);
@@ -124,11 +150,12 @@ async function sendSlackThreadNotification(sessionName, notificationType, projec
                 completedMessage += `🤖 *Claude Response Preview:*\n\`\`\`\n${preview}\n\`\`\``;
 
                 if (truncated) {
-                    completedMessage += `\n\n_💡 Showing first 100 of ${totalWords} words. Full response in tmux._`;
+                    completedMessage += `\n\n_💡 Showing last 100 of ${totalWords} words. Full response in tmux._`;
                 }
             }
 
-            completedMessage += `\n\n:computer: _Session: \`${sessionName}\`_`;
+            completedMessage += `\n\n:file_folder: _Project: ${projectName}_\n`;
+            completedMessage += `:computer: _Session: \`${sessionName}\`_`;
 
             await slackChannel.updateMessage(
                 threadInfo.channelId,
@@ -136,7 +163,8 @@ async function sendSlackThreadNotification(sessionName, notificationType, projec
                 completedMessage
             );
 
-            // Update reactions: hourglass → checkmark
+            // Ensure only checkmark emoji (remove all others first)
+            await slackChannel.removeReaction(threadInfo.channelId, messageInfo.userMessageTs, 'eyes');
             await slackChannel.removeReaction(threadInfo.channelId, messageInfo.userMessageTs, 'hourglass_flowing_sand');
             await slackChannel.addReaction(threadInfo.channelId, messageInfo.userMessageTs, 'white_check_mark');
 
@@ -280,10 +308,25 @@ async function sendHookNotification() {
         // Only claude-session reaches here for Telegram notifications
 
         // Create notification
+        let title, message;
+        if (notificationType === 'init') {
+            title = 'Claude Waiting for Input';
+            message = 'Claude is ready and waiting for your command';
+        } else if (notificationType === 'completed') {
+            title = 'Claude Task Completed';
+            message = 'Claude has completed a task';
+        } else if (notificationType === 'working') {
+            title = 'Claude Processing';
+            message = 'Claude is processing your command';
+        } else {
+            title = 'Claude Notification';
+            message = 'Claude notification';
+        }
+
         const notification = {
             type: notificationType,
-            title: `Claude ${notificationType === 'completed' ? 'Task Completed' : 'Waiting for Input'}`,
-            message: `Claude has ${notificationType === 'completed' ? 'completed a task' : 'is waiting for input'}`,
+            title: title,
+            message: message,
             project: projectName
             // Don't set metadata here - let TelegramChannel extract real conversation content
         };
