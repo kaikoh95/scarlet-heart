@@ -9,6 +9,8 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
 const TmuxMonitor = require('../../utils/tmux-monitor');
+const FileSystemUtils = require('../../utils/file-system-utils');
+const StringUtils = require('../../utils/string-utils');
 const { execSync } = require('child_process');
 
 class EmailChannel extends NotificationChannel {
@@ -24,25 +26,9 @@ class EmailChannel extends NotificationChannel {
         this._initializeTransporter();
     }
 
-    _escapeHtml(text) {
-        if (!text) return '';
-        const htmlEntities = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#39;'
-        };
-        return text.replace(/[&<>"']/g, char => htmlEntities[char]);
-    }
-
     _ensureDirectories() {
-        if (!fs.existsSync(this.sessionsDir)) {
-            fs.mkdirSync(this.sessionsDir, { recursive: true });
-        }
-        if (!fs.existsSync(this.templatesDir)) {
-            fs.mkdirSync(this.templatesDir, { recursive: true });
-        }
+        FileSystemUtils.ensureDirectory(this.sessionsDir);
+        FileSystemUtils.ensureDirectory(this.templatesDir);
     }
 
     _generateToken() {
@@ -352,7 +338,7 @@ class EmailChannel extends NotificationChannel {
                 html = html.replace(placeholder, variables[key]);
             } else {
                 // Escape HTML entities for other content
-                html = html.replace(placeholder, this._escapeHtml(variables[key]));
+                html = html.replace(placeholder, StringUtils.escapeHtml(variables[key]));
             }
             
             // No escaping needed for plain text

@@ -3,58 +3,30 @@
  * Tracks subagent activities for including in completion emails
  */
 
-const fs = require('fs');
 const path = require('path');
+const FileSystemUtils = require('./file-system-utils');
+const JsonDataStore = require('./json-data-store');
+const StringUtils = require('./string-utils');
 
 class SubagentTracker {
     constructor() {
         this.dataDir = path.join(__dirname, '../data');
         this.trackingFile = path.join(this.dataDir, 'subagent-activities.json');
-        this._ensureDataDir();
-    }
-
-    _escapeHtml(text) {
-        if (!text) return '';
-        const htmlEntities = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#39;'
-        };
-        return String(text).replace(/[&<>"']/g, char => htmlEntities[char]);
-    }
-
-    _ensureDataDir() {
-        if (!fs.existsSync(this.dataDir)) {
-            fs.mkdirSync(this.dataDir, { recursive: true });
-        }
+        FileSystemUtils.ensureDirectory(this.dataDir);
     }
 
     /**
      * Load existing activities
      */
     _loadActivities() {
-        if (!fs.existsSync(this.trackingFile)) {
-            return {};
-        }
-        try {
-            return JSON.parse(fs.readFileSync(this.trackingFile, 'utf8'));
-        } catch (error) {
-            console.error('Failed to load subagent activities:', error);
-            return {};
-        }
+        return JsonDataStore.loadObject(this.trackingFile);
     }
 
     /**
      * Save activities to file
      */
     _saveActivities(activities) {
-        try {
-            fs.writeFileSync(this.trackingFile, JSON.stringify(activities, null, 2));
-        } catch (error) {
-            console.error('Failed to save subagent activities:', error);
-        }
+        JsonDataStore.save(this.trackingFile, activities);
     }
 
     /**
@@ -81,14 +53,6 @@ class SubagentTracker {
     }
 
     /**
-     * Get activities for a session
-     */
-    getActivities(sessionId) {
-        const activities = this._loadActivities();
-        return activities[sessionId] || null;
-    }
-
-    /**
      * Clear activities for a session
      */
     clearActivities(sessionId) {
@@ -98,28 +62,11 @@ class SubagentTracker {
     }
 
     /**
-     * Clean up old activities (older than 24 hours)
-     */
-    cleanupOldActivities() {
-        const activities = this._loadActivities();
-        const now = new Date();
-        const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
-
-        for (const sessionId in activities) {
-            const startTime = new Date(activities[sessionId].startTime);
-            if (startTime < oneDayAgo) {
-                delete activities[sessionId];
-            }
-        }
-
-        this._saveActivities(activities);
-    }
-
-    /**
      * Format activities for email
      */
     formatActivitiesForEmail(sessionId) {
-        const sessionData = this.getActivities(sessionId);
+        const allActivities = this._loadActivities();
+        const sessionData = allActivities[sessionId] || null;
         if (!sessionData || sessionData.activities.length === 0) {
             return '';
         }
@@ -151,14 +98,14 @@ class SubagentTracker {
                 const time = new Date(item.timestamp).toLocaleTimeString();
                 html += `<li style="color: #ccc; margin: 8px 0; list-style-type: none;">`;
                 html += `<div style="background-color: #262626; padding: 10px; border-left: 3px solid #00bcd4; margin: 5px 0;">`;
-                html += `<div><span style="color: #999;">[${time}]</span> <strong style="color: #fff;">${this._escapeHtml(item.description || 'Subagent task')}</strong></div>`;
-                
+                html += `<div><span style="color: #999;">[${time}]</span> <strong style="color: #fff;">${StringUtils.escapeHtml(item.description || 'Subagent task')}</strong></div>`;
+
                 if (item.details) {
                     // Show the question if available
                     if (item.details.userQuestion && item.details.userQuestion !== item.description) {
-                        html += `<div style="color: #00ff00; margin-top: 5px; font-size: 12px;">→ Question: ${this._escapeHtml(item.details.userQuestion)}</div>`;
+                        html += `<div style="color: #00ff00; margin-top: 5px; font-size: 12px;">→ Question: ${StringUtils.escapeHtml(item.details.userQuestion)}</div>`;
                     }
-                    
+
                     // Show the response
                     if (item.details.claudeResponse) {
                         const response = item.details.claudeResponse;
@@ -167,7 +114,7 @@ class SubagentTracker {
                             html += `<div style="color: #ff9800; margin-top: 5px; font-size: 12px; font-style: italic;">⏳ Subagent was processing... (full output available in tmux session)</div>`;
                         } else {
                             html += `<div style="color: #ccc; margin-top: 5px; margin-left: 20px; font-size: 12px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; background-color: #1a1a1a; padding: 8px; border-radius: 4px;">`;
-                            html += this._escapeHtml(response);
+                            html += StringUtils.escapeHtml(response);
                             html += `</div>`;
                         }
                     }
