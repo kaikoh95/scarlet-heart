@@ -183,8 +183,21 @@ class TelegramChannel extends NotificationChannel {
 
     async _generateTelegramMessage(notification, sessionId, token) {
         const type = notification.type;
-        const emoji = type === 'completed' ? '✅' : '⏳';
-        const status = type === 'completed' ? 'Task Completed' : 'Waiting for Input';
+        let emoji, status;
+
+        if (type === 'init') {
+            emoji = '🤖';
+            status = 'Waiting for Input';
+        } else if (type === 'completed') {
+            emoji = '✅';
+            status = 'Task Completed';
+        } else if (type === 'working') {
+            emoji = '⏳';
+            status = 'Processing';
+        } else {
+            emoji = '📢';
+            status = 'Notification';
+        }
 
         // Build beautiful formatted message using HTML
         let messageText = '';

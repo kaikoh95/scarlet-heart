@@ -5,6 +5,7 @@
 
 const BaseWebhookHandler = require('../../core/base-webhook-handler');
 const AuthorizationService = require('../../utils/authorization-service');
+const Logger = require('../../core/logger');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
@@ -16,6 +17,7 @@ const TELEGRAM_SESSION = 'claude-session';
 class TelegramWebhookHandler extends BaseWebhookHandler {
     constructor(config = {}) {
         super(config, 'telegram-webhook');
+        this.logger = new Logger('TelegramWebhook');
         this.sessionsDir = path.join(__dirname, '../../data/sessions');
         this.injector = new ControllerInjector();
         this.apiBaseUrl = 'https://api.telegram.org';
