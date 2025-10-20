@@ -1,5 +1,7 @@
 # Claude Code Remote
 
+Forked and adapted from [Claude Code Remote by JessyTsui](https://github.com/JessyTsui/Claude-Code-Remote)
+
 Control [Claude Code](https://claude.ai/code) remotely via multiple messaging platforms. Start tasks locally, receive notifications when Claude completes them, and send new commands by simply replying to messages.
 
 **Supported Platforms:**
@@ -89,8 +91,8 @@ Control [Claude Code](https://claude.ai/code) remotely via multiple messaging pl
 ### 2. Install
 
 ```bash
-git clone https://github.com/JessyTsui/Claude-Code-Remote.git
-cd Claude-Code-Remote
+git clone https://github.com/kaikoh95/scarlet-heart.git
+cd scarlet-heart
 npm install
 ```
 
@@ -115,7 +117,7 @@ IMAP_USER=your-email@gmail.com
 IMAP_PASS=your-app-password
 EMAIL_TO=your-notification-email@gmail.com
 ALLOWED_SENDERS=your-notification-email@gmail.com
-SESSION_MAP_PATH=/your/path/to/Claude-Code-Remote/src/data/session-map.json
+SESSION_MAP_PATH=/your/path/to/scarlet-heart/src/data/session-map.json
 ```
 
 📌 **Gmail users**: Use [App Passwords](https://myaccount.google.com/security), not your regular password.
@@ -139,7 +141,7 @@ TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=your-bot-token-here
 TELEGRAM_CHAT_ID=your-chat-id-here
 TELEGRAM_WEBHOOK_URL=https://your-ngrok-url.app
-SESSION_MAP_PATH=/your/path/to/Claude-Code-Remote/src/data/session-map.json
+SESSION_MAP_PATH=/your/path/to/scarlet-heart/src/data/session-map.json
 ```
 
 **Optional Telegram settings:**
@@ -182,7 +184,7 @@ chmod +x setup-slack.sh
 SLACK_ENABLED=true
 SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_SIGNING_SECRET=your-signing-secret
-SESSION_MAP_PATH=/your/path/to/Claude-Code-Remote/src/data/session-map.json
+SESSION_MAP_PATH=/your/path/to/scarlet-heart/src/data/session-map.json
 ```
 
 **Optional Slack settings:**
@@ -251,7 +253,7 @@ Create hooks configuration file:
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "node /your/path/to/Claude-Code-Remote/claude-hook-notify.js init",
+        "command": "node /your/path/to/scarlet-heart/claude-hook-notify.js init",
         "timeout": 5
       }]
     }],
@@ -259,7 +261,7 @@ Create hooks configuration file:
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "node /your/path/to/Claude-Code-Remote/claude-hook-notify.js working",
+        "command": "node /your/path/to/scarlet-heart/claude-hook-notify.js working",
         "timeout": 5
       }]
     }],
@@ -267,7 +269,7 @@ Create hooks configuration file:
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "node /your/path/to/Claude-Code-Remote/claude-hook-notify.js completed",
+        "command": "node /your/path/to/scarlet-heart/claude-hook-notify.js completed",
         "timeout": 5
       }]
     }]
@@ -278,7 +280,7 @@ Create hooks configuration file:
 **Method 2: Project-Specific Configuration**
 ```bash
 # Set environment variable
-export CLAUDE_HOOKS_CONFIG=/your/path/to/Claude-Code-Remote/claude-hooks.json
+export CLAUDE_HOOKS_CONFIG=/your/path/to/scarlet-heart/claude-hooks.json
 ```
 
 ### 5. Start tmux Session with Claude Code
