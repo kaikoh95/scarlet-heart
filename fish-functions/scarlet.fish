@@ -50,7 +50,6 @@ function scarlet
 
             echo ""
             echo "✅ Claude session started!"
-            echo "📺 Attach to session with: scarlet -a"
 
         case kill
             tmux kill-session -t $session_name 2>/dev/null

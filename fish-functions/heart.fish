@@ -46,7 +46,7 @@ function heart
 
             while test $elapsed -lt $timeout
                 set -l captured (tmux capture-pane -t "$session_name:0.0" -p -S -50 2>/dev/null)
-                if echo "$captured" | grep -q -E "started on port|webhook server star"
+                if echo "$captured" | grep -q -E "started on port|webhook server star|running on port|Unified webhook server running"
                     echo "✅ Telegram webhook server started!"
                     break
                 end
