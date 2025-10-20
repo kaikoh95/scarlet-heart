@@ -1,6 +1,6 @@
 function heart
     set -l session_name "telegram-session"
-    set -l script_dir "/home/kai/Documents/dev/Claude-Code-Remote"
+    set -l script_dir "/home/kai/Documents/dev/scarlet-heart"
 
     # Default action is start
     set -l action "start"

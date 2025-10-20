@@ -1,6 +1,6 @@
 function scarlet
     set -l session_name "claude-session"
-    set -l script_dir "/home/kai/Documents/dev/Claude-Code-Remote"
+    set -l script_dir "/home/kai/Documents/dev/scarlet-heart"
     set -l work_dir $script_dir
 
     # Default action is start
