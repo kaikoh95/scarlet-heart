@@ -21,7 +21,7 @@
           "pass": "your-app-password"
         }
       },
-      "from": "Claude-Code-Remote <your-email@gmail.com>",
+      "from": "scarlet-heart <your-email@gmail.com>",
       "to": "your-email@gmail.com",
       "template": {
         "checkInterval": 30

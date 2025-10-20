@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node /path/to/Claude-Code-Remote/claude-hook-notify.js init",
+            "command": "node /path/to/scarlet-heart/claude-hook-notify.js init",
             "timeout": 5
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node /path/to/Claude-Code-Remote/claude-hook-notify.js working",
+            "command": "node /path/to/scarlet-heart/claude-hook-notify.js working",
             "timeout": 5
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node /path/to/Claude-Code-Remote/claude-hook-notify.js completed",
+            "command": "node /path/to/scarlet-heart/claude-hook-notify.js completed",
             "timeout": 5
           }
         ]
