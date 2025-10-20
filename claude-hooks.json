@@ -1,24 +1,36 @@
 {
   "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/Claude-Code-Remote/claude-hook-notify.js init",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/Claude-Code-Remote/claude-hook-notify.js working",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "node /Users/path/to/Claude-Code-Remote/claude-hook-notify.js completed",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command", 
-            "command": "node /Users/path/to/Claude-Code-Remote/claude-hook-notify.js waiting",
+            "command": "node /path/to/Claude-Code-Remote/claude-hook-notify.js completed",
             "timeout": 5
           }
         ]
