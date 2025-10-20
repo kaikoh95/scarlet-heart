@@ -1,5 +1,5 @@
 /**
- * Claude-Code-Remote Configuration Manager
+ * scarlet-heart Configuration Manager
  * Handles loading, merging, and saving configurations
  */
 
@@ -90,7 +90,7 @@ class ConfigManager {
                 enabled: false,
                 config: {
                     webhook: '',
-                    username: 'Claude-Code-Remote',
+                    username: 'scarlet-heart',
                     avatar: null
                 }
             },

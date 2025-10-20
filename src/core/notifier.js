@@ -1,5 +1,5 @@
 /**
- * Claude-Code-Remote Core Notifier
+ * scarlet-heart Core Notifier
  * Central notification orchestrator that manages multiple channels
  */
 

@@ -1,12 +1,12 @@
 /**
- * Claude-Code-Remote Logger
+ * scarlet-heart Logger
  * Centralized logging utility
  */
 
 class Logger {
-    constructor(namespace = 'Claude-Code-Remote') {
+    constructor(namespace = 'scarlet-heart') {
         this.namespace = namespace;
-        this.logLevel = process.env.CLAUDE_CODE_REMOTE_LOG_LEVEL || 'info';
+        this.logLevel = process.env.SCARLET_HEART_LOG_LEVEL || 'info';
     }
 
     _log(level, message, ...args) {

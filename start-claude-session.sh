@@ -5,7 +5,7 @@
 
 CLAUDE_SESSION="claude-session"
 WEBHOOK_SESSION="telegram-session"
-PROJECT_DIR="/home/kai/Documents/dev/Claude-Code-Remote"
+PROJECT_DIR="/home/kai/Documents/dev/scarlet-heart"
 WORK_DIR="$PROJECT_DIR"
 
 # Function to wait for a pattern in tmux pane output

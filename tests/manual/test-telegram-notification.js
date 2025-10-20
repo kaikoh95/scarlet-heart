@@ -35,7 +35,7 @@ async function testNotification() {
         message: 'Test notification from Claude Code Remote',
         project: 'claude-code-line',
         metadata: {
-            userQuestion: '請幫我查詢這個代碼庫：https://github.com/JessyTsui/Claude-Code-Remote',
+            userQuestion: '請幫我查詢這個代碼庫：https://github.com/JessyTsui/scarlet-heart',
             claudeResponse: '我已經查詢了這個代碼庫，這是一個 Claude Code Remote 項目，允許通過電子郵件遠程控制 Claude Code。',
             tmuxSession: 'claude-test'
         }
