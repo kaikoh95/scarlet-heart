@@ -409,6 +409,128 @@ class SlackChannel extends NotificationChannel {
         return blocks;
     }
 
+    /**
+     * Update/edit an existing message
+     * @param {string} channelId - Channel ID
+     * @param {string} messageTs - Message timestamp to update
+     * @param {string} text - New message text
+     * @returns {Promise<boolean>} - Success status
+     */
+    async updateMessage(channelId, messageTs, text) {
+        try {
+            const payload = {
+                channel: channelId,
+                ts: messageTs,
+                text: text,
+                mrkdwn: true
+            };
+
+            const response = await axios.post(
+                `${this.apiBaseUrl}/chat.update`,
+                payload,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${this.config.botToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if (!response.data.ok) {
+                this.logger.error('Failed to update message:', response.data.error);
+                return false;
+            }
+
+            this.logger.info(`✓ Updated message ${messageTs} in channel ${channelId}`);
+            return true;
+        } catch (error) {
+            this.logger.error('Failed to update message:', error.response?.data || error.message);
+            return false;
+        }
+    }
+
+    /**
+     * Add emoji reaction to a message
+     * @param {string} channelId - Channel ID
+     * @param {string} messageTs - Message timestamp
+     * @param {string} emoji - Emoji name (without colons, e.g., 'thumbsup', 'eyes', 'white_check_mark')
+     * @returns {Promise<boolean>} - Success status
+     */
+    async addReaction(channelId, messageTs, emoji) {
+        try {
+            const response = await axios.post(
+                `${this.apiBaseUrl}/reactions.add`,
+                {
+                    channel: channelId,
+                    timestamp: messageTs,
+                    name: emoji
+                },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${this.config.botToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if (response.data.ok) {
+                this.logger.debug(`✓ Added reaction ${emoji} to message ${messageTs}`);
+                return true;
+            } else if (response.data.error === 'already_reacted') {
+                this.logger.debug(`Reaction ${emoji} already exists on message ${messageTs}`);
+                return true; // Not an error
+            } else {
+                this.logger.warn(`Failed to add reaction ${emoji}:`, response.data.error);
+                return false;
+            }
+        } catch (error) {
+            // Don't fail the main flow if reactions fail
+            this.logger.debug('Failed to add reaction:', error.response?.data?.error || error.message);
+            return false;
+        }
+    }
+
+    /**
+     * Remove emoji reaction from a message
+     * @param {string} channelId - Channel ID
+     * @param {string} messageTs - Message timestamp
+     * @param {string} emoji - Emoji name (without colons)
+     * @returns {Promise<boolean>} - Success status
+     */
+    async removeReaction(channelId, messageTs, emoji) {
+        try {
+            const response = await axios.post(
+                `${this.apiBaseUrl}/reactions.remove`,
+                {
+                    channel: channelId,
+                    timestamp: messageTs,
+                    name: emoji
+                },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${this.config.botToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if (response.data.ok) {
+                this.logger.debug(`✓ Removed reaction ${emoji} from message ${messageTs}`);
+                return true;
+            } else if (response.data.error === 'no_reaction') {
+                this.logger.debug(`Reaction ${emoji} not found on message ${messageTs}`);
+                return true; // Not an error
+            } else {
+                this.logger.warn(`Failed to remove reaction ${emoji}:`, response.data.error);
+                return false;
+            }
+        } catch (error) {
+            // Don't fail the main flow if reactions fail
+            this.logger.debug('Failed to remove reaction:', error.response?.data?.error || error.message);
+            return false;
+        }
+    }
+
     supportsRelay() {
         return true;
     }
