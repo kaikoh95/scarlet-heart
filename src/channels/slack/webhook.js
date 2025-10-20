@@ -5,6 +5,7 @@
 
 const BaseWebhookHandler = require('../../core/base-webhook-handler');
 const AuthorizationService = require('../../utils/authorization-service');
+const Logger = require('../../core/logger');
 const crypto = require('crypto');
 const axios = require('axios');
 const SlackThreadManager = require('../../utils/slack-thread-manager');
@@ -13,6 +14,7 @@ const TextFormatter = require('../../utils/text-formatter');
 class SlackWebhookHandler extends BaseWebhookHandler {
     constructor(config = {}) {
         super(config, 'slack-webhook');
+        this.logger = new Logger('SlackWebhook');
         this.threadManager = new SlackThreadManager();
         this.apiBaseUrl = 'https://slack.com/api';
         this.botUserId = null; // Cache for bot user ID
@@ -200,20 +202,18 @@ class SlackWebhookHandler extends BaseWebhookHandler {
 
             if (session.isNew) {
                 // === STATE 1: STARTING ===
-                // Send initial "Starting" message
-                const startingMessage = `:hourglass_flowing_sand: *Starting new Claude session*\n\n` +
-                    `:computer: *Session:* \`${session.sessionName}\`\n` +
-                    `:memo: *Your Request:* ${promptPreview}\n\n` +
-                    `Setting up your Claude session...`;
+                // Send initial placeholder message (will be updated by SubagentStop hook)
+                const placeholderMessage = `:hourglass_flowing_sand: *Setting up Claude session...*\n\n` +
+                    `:computer: *Session:* \`${session.sessionName}\``;
 
-                const botMessageTs = await this._sendMessage(channelId, startingMessage, threadTs, false);
+                const botMessageTs = await this._sendMessage(channelId, placeholderMessage, threadTs, false);
 
                 if (!botMessageTs) {
                     throw new Error('Failed to send starting message');
                 }
 
                 // Store thread data for state management
-                this.threadMessages.set(threadKey, {
+                const messageInfo = {
                     userMessageTs: messageTs,
                     botMessageTs: botMessageTs,
                     state: 'starting',
@@ -222,39 +222,49 @@ class SlackWebhookHandler extends BaseWebhookHandler {
                     sessionName: session.sessionName,
                     prompt: prompt,
                     timestamp: Date.now()
-                });
+                };
+
+                this.threadMessages.set(threadKey, messageInfo);
+
+                // Store message info for hooks to access
+                this.threadManager.setThreadMessageInfo(session.sessionName, messageInfo);
+                this.logger.info(`✓ Stored message info for hooks: session=${session.sessionName}`);
 
                 // Add eyes reaction to user message
                 await this._addReaction(channelId, messageTs, 'eyes');
 
-                // Get thread conversation history
-                let threadContext = '';
+                // Get thread conversation history (includes current @mention)
+                let fullPrompt = '';
                 try {
                     const threadHistory = await this._getThreadConversation(channelId, threadTs);
                     if (threadHistory) {
-                        threadContext = threadHistory + '\n\n';
-                        this.logger.info(`✓ Captured thread context (${threadHistory.length} chars)`);
+                        const messageCount = (threadHistory.match(/User:/g) || []).length;
+                        this.logger.info(`✓ Captured thread context: ${messageCount} user messages, ${threadHistory.length} chars`);
+                        this.logger.info(`📝 Thread context preview: ${threadHistory.substring(0, 200)}...`);
+                        // Use the captured thread as-is (already includes current @mention)
+                        // Preserve message structure while cleaning up excessive whitespace
+                        fullPrompt = threadHistory
+                            .replace(/\n{3,}/g, '\n\n')  // Collapse multiple newlines to max 2
+                            .replace(/[ \t]+/g, ' ')      // Collapse spaces/tabs to single space
+                            .trim();
+                        this.logger.info(`📤 Sending to Claude: ${fullPrompt.substring(0, 200)}...`);
+                    } else {
+                        // Fallback: use just the current message if context capture fails
+                        fullPrompt = `User: ${prompt}`;
+                        this.logger.warn(`⚠️ No thread history, using fallback: ${fullPrompt}`);
                     }
                 } catch (contextError) {
                     this.logger.warn(`⚠️ Failed to get thread context: ${contextError.message}`);
+                    // Fallback: use just the current message
+                    fullPrompt = `User: ${prompt}`;
                 }
-
-                // Construct the full prompt
-                const fullPrompt = (threadContext + `User request: ${prompt}`)
-                    .replace(/\n/g, ' ')
-                    .replace(/\s+/g, ' ')
-                    .trim();
 
                 try {
                     // Start Claude in tmux
+                    // The UserPromptSubmit hook will update the message to "working" state
                     await this.threadManager.startClaudeInSession(session.sessionName, `/bg-workflow ${fullPrompt}`);
 
-                    // === STATE 2: WORKING ===
-                    // Update to "Working" state
-                    await this._updateThreadState(channelId, threadTs, 'working', {
-                        sessionName: session.sessionName,
-                        prompt: promptPreview
-                    });
+                    this.logger.info(`✓ Claude started, hooks will update message state`);
 
                 } catch (startError) {
                     this.logger.error(`❌ Failed to start Claude session: ${startError.message}`);
@@ -273,20 +283,45 @@ class SlackWebhookHandler extends BaseWebhookHandler {
                 // === CONTINUING CONVERSATION ===
                 this.logger.info(`♻️ Continuing existing Claude session: ${session.sessionName}`);
 
-                // Send initial message
-                const continuingMessage = `:hourglass_flowing_sand: *Sending message to Claude*\n\n` +
-                    `:computer: *Session:* \`${session.sessionName}\`\n` +
-                    `:memo: *Your Request:* ${promptPreview}\n\n` +
-                    `Preparing your message...`;
+                // FIRST: Get new user messages BEFORE sending placeholder
+                // This ensures we capture messages before our placeholder becomes the "most recent bot message"
+                let fullPrompt = '';
+                try {
+                    const newMessages = await this._getNewUserMessagesForContinuation(channelId, threadTs);
+                    if (newMessages) {
+                        const messageCount = (newMessages.match(/User:/g) || []).length;
+                        this.logger.info(`✓ Captured ${messageCount} new user message(s), ${newMessages.length} chars`);
+                        this.logger.info(`📝 New messages preview: ${newMessages.substring(0, 200)}...`);
+                        // Use the captured messages as-is (already includes current @mention)
+                        // Just clean up excessive whitespace while preserving message boundaries
+                        fullPrompt = newMessages
+                            .replace(/\n{3,}/g, '\n\n')  // Collapse multiple newlines to max 2
+                            .replace(/[ \t]+/g, ' ')      // Collapse spaces/tabs to single space
+                            .trim();
+                        this.logger.info(`📤 Sending to Claude: ${fullPrompt.substring(0, 200)}...`);
+                    } else {
+                        // Fallback: use just the current message if context capture fails
+                        fullPrompt = `User: ${prompt}`;
+                        this.logger.warn(`⚠️ No new messages found, using fallback: ${fullPrompt}`);
+                    }
+                } catch (contextError) {
+                    this.logger.warn(`⚠️ Failed to get new messages: ${contextError.message}`);
+                    // Fallback: use just the current message
+                    fullPrompt = `User: ${prompt}`;
+                }
 
-                const botMessageTs = await this._sendMessage(channelId, continuingMessage, threadTs);
+                // THEN: Send placeholder message (will be updated by UserPromptSubmit hook)
+                const placeholderMessage = `:hourglass_flowing_sand: *Sending message to Claude...*\n\n` +
+                    `:computer: *Session:* \`${session.sessionName}\``;
+
+                const botMessageTs = await this._sendMessage(channelId, placeholderMessage, threadTs);
 
                 if (!botMessageTs) {
                     throw new Error('Failed to send continuation message');
                 }
 
                 // Store/update thread data
-                this.threadMessages.set(threadKey, {
+                const messageInfo = {
                     userMessageTs: messageTs,
                     botMessageTs: botMessageTs,
                     state: 'starting',
@@ -295,38 +330,23 @@ class SlackWebhookHandler extends BaseWebhookHandler {
                     sessionName: session.sessionName,
                     prompt: prompt,
                     timestamp: Date.now()
-                });
+                };
+
+                this.threadMessages.set(threadKey, messageInfo);
+
+                // Store message info for hooks to access
+                this.threadManager.setThreadMessageInfo(session.sessionName, messageInfo);
+                this.logger.info(`✓ Stored message info for hooks: session=${session.sessionName}`);
 
                 // Add eyes reaction
                 await this._addReaction(channelId, messageTs, 'eyes');
 
-                // Get new user messages
-                let newMessagesContext = '';
-                try {
-                    const newMessages = await this._getNewUserMessagesForContinuation(channelId, threadTs);
-                    if (newMessages) {
-                        newMessagesContext = newMessages + '\n\n';
-                        this.logger.info(`✓ Captured ${newMessages.split('User:').length - 1} new user message(s)`);
-                    }
-                } catch (contextError) {
-                    this.logger.warn(`⚠️ Failed to get new messages: ${contextError.message}`);
-                }
-
-                // Construct the full prompt
-                const fullPrompt = (newMessagesContext + `Current user request: ${prompt}`)
-                    .replace(/\n/g, ' ')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-
                 try {
                     // Send to the existing session
+                    // The UserPromptSubmit hook will update the message to "working" state
                     await this.threadManager.sendToSession(session.sessionName, `/bg-workflow ${fullPrompt}`);
 
-                    // Update to "Working" state
-                    await this._updateThreadState(channelId, threadTs, 'working', {
-                        sessionName: session.sessionName,
-                        prompt: promptPreview
-                    });
+                    this.logger.info(`✓ Command sent, hooks will update message state`);
 
                 } catch (sendError) {
                     this.logger.error(`❌ Failed to send to existing session: ${sendError.message}`);
