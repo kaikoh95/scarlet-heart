@@ -106,10 +106,10 @@ class SlackWebhookHandler extends BaseWebhookHandler {
         if (event.type === 'app_mention') {
             await this._handleAppMention(event);
         }
-        // Handle direct messages
-        if (event.type === 'message' && event.channel_type === 'im') {
-            await this._handleDirectMessage(event);
-        }
+        // Direct messages are disabled for now - will be re-thought in the future
+        // if (event.type === 'message' && event.channel_type === 'im') {
+        //     await this._handleDirectMessage(event);
+        // }
     }
 
     async _handleAppMention(event) {
