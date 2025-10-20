@@ -1,7 +1,7 @@
 {
-  "name": "claude-code-remote",
+  "name": "scarlet-heart",
   "version": "1.0.0",
-  "description": "Claude Code Smart Notification System - Send desktop notifications when Claude completes tasks or needs input",
+  "description": "Forked then adapted from JessyTsui/Claude-Code-Remote - Claude Code Smart Notification System - Send desktop notifications when Claude completes tasks or needs input",
   "main": "hook-notify.js",
   "scripts": {
     "config": "node claude-remote-config.js",
@@ -27,7 +27,7 @@
     "claude",
     "ai-assistant"
   ],
-  "author": "Claude-Code-Remote Team",
+  "author": "scarlet-heart Team",
   "license": "MIT",
   "engines": {
     "node": ">=14.0.0"
@@ -39,12 +39,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Claude-Code-Remote/Claude-Code-Remote.git"
+    "url": "https://github.com/scarlet-heart/scarlet-heart.git"
   },
   "bugs": {
-    "url": "https://github.com/Claude-Code-Remote/Claude-Code-Remote/issues"
+    "url": "https://github.com/scarlet-heart/scarlet-heart/issues"
   },
-  "homepage": "https://github.com/Claude-Code-Remote/Claude-Code-Remote#readme",
+  "homepage": "https://github.com/scarlet-heart/scarlet-heart#readme",
   "dependencies": {
     "axios": "^1.6.0",
     "dotenv": "^17.2.1",
