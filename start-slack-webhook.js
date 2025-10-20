@@ -34,8 +34,9 @@ if (!config.botToken) {
     process.exit(1);
 }
 
-if (!config.channelId) {
-    logger.error('SLACK_CHANNEL_ID must be set in .env file');
+// SLACK_CHANNEL_ID is optional if whitelist is configured
+if (!config.channelId && config.whitelist.length === 0) {
+    logger.error('Either SLACK_CHANNEL_ID or SLACK_WHITELIST must be set in .env file');
     process.exit(1);
 }
 
@@ -46,7 +47,7 @@ async function start() {
     logger.info('Starting Slack webhook server...');
     logger.info(`Configuration:`);
     logger.info(`- Port: ${config.port}`);
-    logger.info(`- Channel ID: ${config.channelId}`);
+    logger.info(`- Channel ID: ${config.channelId || 'Not set (using whitelist)'}`);
     logger.info(`- Signing Secret: ${config.signingSecret ? 'Configured' : 'Not configured (signature verification disabled)'}`);
     logger.info(`- Whitelist: ${config.whitelist.length > 0 ? config.whitelist.join(', ') : 'None (using configured channel)'}`);
 

@@ -12,11 +12,13 @@ class BaseSessionManager {
         this.logger = new Logger(serviceName);
         this.dataDir = path.join(__dirname, '../data');
         this.mappingFile = path.join(this.dataDir, `${serviceName}-mappings.json`);
+        this.messageInfoFile = path.join(this.dataDir, `${serviceName}-message-info.json`);
         this.mappings = {};
         this.messageInfo = new Map(); // For hook access
 
         this._ensureDirectories();
         this._loadMappings();
+        this._loadMessageInfo();
     }
 
     /**
@@ -64,12 +66,48 @@ class BaseSessionManager {
     }
 
     /**
+     * Load message info from disk
+     * @private
+     */
+    _loadMessageInfo() {
+        try {
+            if (fs.existsSync(this.messageInfoFile)) {
+                const data = fs.readFileSync(this.messageInfoFile, 'utf8');
+                const parsed = JSON.parse(data);
+                this.messageInfo = new Map(Object.entries(parsed));
+                this.logger.info(`Loaded ${this.messageInfo.size} message info entries from ${this.messageInfoFile}`);
+            } else {
+                this.messageInfo = new Map();
+                this._saveMessageInfo();
+                this.logger.info(`Created new message info file: ${this.messageInfoFile}`);
+            }
+        } catch (error) {
+            this.logger.error(`Failed to load message info: ${error.message}`);
+            this.messageInfo = new Map();
+        }
+    }
+
+    /**
+     * Save message info to disk
+     * @private
+     */
+    _saveMessageInfo() {
+        try {
+            const data = Object.fromEntries(this.messageInfo);
+            fs.writeFileSync(this.messageInfoFile, JSON.stringify(data, null, 2));
+        } catch (error) {
+            this.logger.error(`Failed to save message info: ${error.message}`);
+        }
+    }
+
+    /**
      * Store message info for hook access
      * @param {string} sessionName - Session name
      * @param {Object} messageInfo - Message info object
      */
     setMessageInfo(sessionName, messageInfo) {
         this.messageInfo.set(sessionName, messageInfo);
+        this._saveMessageInfo();
         this.logger.info(`Stored message info for session ${sessionName}`);
     }
 
@@ -88,6 +126,7 @@ class BaseSessionManager {
      */
     clearMessageInfo(sessionName) {
         this.messageInfo.delete(sessionName);
+        this._saveMessageInfo();
         this.logger.info(`Cleared message info for session ${sessionName}`);
     }
 
